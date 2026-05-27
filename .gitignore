@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data and models (too large for git)
+data/raw/
+data/processed/
+models/*/
+results/*.png
+results/*.csv
+results/*.npy
+results/processed_data/
+results/final_summary.json
+
+# Env
+.env
+*.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db

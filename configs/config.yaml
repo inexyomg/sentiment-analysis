@@ -1,0 +1,59 @@
+data:
+  dataset_name: "sepidmnorozy/Russian_sentiment"
+  text_column: "text"
+  label_column: "label"
+  max_length: 128
+  test_size: 0.15
+  val_size: 0.15
+  seed: 42
+
+models:
+  rubert:
+    name: "blanchefort/rubert-base-cased-sentiment"
+    output_dir: "./models/rubert"
+    batch_size: 32
+    learning_rate: 2.0e-5
+    num_epochs: 5
+    max_length: 128
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+
+  xlmroberta:
+    name: "xlm-roberta-base"
+    output_dir: "./models/xlmroberta"
+    batch_size: 16
+    learning_rate: 2.0e-5
+    num_epochs: 5
+    max_length: 128
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+
+  rubert_tiny:
+    name: "cointegrated/rubert-tiny2"
+    output_dir: "./models/rubert_tiny"
+    batch_size: 64
+    learning_rate: 3.0e-5
+    num_epochs: 5
+    max_length: 128
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+
+training:
+  seed: 42
+  fp16: true
+  early_stopping_patience: 2
+  logging_steps: 100
+  num_labels: 3
+
+labels:
+  0: "negative"
+  1: "neutral"
+  2: "positive"
+
+ensemble:
+  methods:
+    - hard_voting
+    - soft_voting
+    - weighted_averaging
+    - stacking_logistic
+    - stacking_svm
