@@ -1,42 +1,34 @@
 import os
 import pandas as pd
 import numpy as np
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import load_dataset, Dataset, DatasetDict, concatenate_datasets
 from sklearn.model_selection import train_test_split
 from typing import Optional, Tuple, Dict, List
 
 
-# ── Ekman emotion taxonomy ──────────────────────────────────────────
-# Maps GoEmotions 28 fine-grained emotions → 7 Ekman classes
+# ── Ekman taxonomy ─────────────────────────────────────────────────
 
 EKMAN_LABEL_NAMES: List[str] = ["anger", "disgust", "fear", "joy", "sadness", "surprise", "neutral"]
-EKMAN_LABEL2ID: Dict[str, int] = {name: i for i, name in enumerate(EKMAN_LABEL_NAMES)}
-EKMAN_ID2LABEL: Dict[int, str] = {i: name for i, name in enumerate(EKMAN_LABEL_NAMES)}
+EKMAN_LABEL2ID:   Dict[str, int] = {n: i for i, n in enumerate(EKMAN_LABEL_NAMES)}
+EKMAN_ID2LABEL:   Dict[int, str] = {i: n for i, n in enumerate(EKMAN_LABEL_NAMES)}
 
-# GoEmotions 28 emotions → Ekman class
+# GoEmotions 28 fine-grained → Ekman
 EMOTION_TO_EKMAN: Dict[str, str] = {
-    # anger
     "anger": "anger", "annoyance": "anger", "disapproval": "anger",
-    # disgust
     "disgust": "disgust",
-    # fear
     "fear": "fear", "nervousness": "fear",
-    # joy
     "admiration": "joy", "amusement": "joy", "approval": "joy",
     "caring": "joy", "desire": "joy", "excitement": "joy",
     "gratitude": "joy", "joy": "joy", "love": "joy",
     "optimism": "joy", "pride": "joy", "relief": "joy",
-    # sadness
     "disappointment": "sadness", "embarrassment": "sadness",
     "grief": "sadness", "remorse": "sadness", "sadness": "sadness",
-    # surprise
     "confusion": "surprise", "curiosity": "surprise",
     "realization": "surprise", "surprise": "surprise",
-    # neutral
     "neutral": "neutral",
 }
 
-# GoEmotions integer index → emotion name (HuggingFace standard order)
+# GoEmotions index → emotion name
 GOEMOTION_IDX2NAME: Dict[int, str] = {
     0: "admiration", 1: "amusement", 2: "anger", 3: "annoyance",
     4: "approval", 5: "caring", 6: "confusion", 7: "curiosity",
@@ -47,87 +39,185 @@ GOEMOTION_IDX2NAME: Dict[int, str] = {
     24: "relief", 25: "remorse", 26: "sadness", 27: "surprise",
 }
 
+# CEDR: 5 emotion indices → Ekman class
+CEDR_IDX2EKMAN: Dict[int, str] = {
+    0: "joy", 1: "sadness", 2: "surprise", 3: "fear", 4: "anger",
+}
 
-def _multilabel_to_ekman(label_ids) -> int:
+# Djacon/ru-izard-emotions: 10 Izard indices → Ekman class
+IZARD_IDX2EKMAN: Dict[int, str] = {
+    0: "neutral",
+    1: "joy",
+    2: "sadness",
+    3: "anger",
+    4: "joy",      # interest / enthusiasm
+    5: "surprise",
+    6: "disgust",
+    7: "fear",
+    8: "sadness",  # guilt
+    9: "disgust",  # shame
+}
+
+
+def _multilabel_to_ekman(label_ids, idx2ekman: Dict[int, str]) -> int:
     """
-    Convert a list of GoEmotions label indices (multi-label) to a single Ekman class.
-    Strategy: count votes per Ekman class; break ties by Ekman order; neutral is last resort.
+    Majority-vote conversion of a multi-label list → single Ekman class.
+    Non-neutral wins on tie; neutral is fallback when empty.
     """
     if not label_ids:
         return EKMAN_LABEL2ID["neutral"]
 
     votes: Dict[str, int] = {}
     for idx in label_ids:
-        emotion = GOEMOTION_IDX2NAME.get(int(idx))
-        if emotion:
-            ekman = EMOTION_TO_EKMAN.get(emotion, "neutral")
-            votes[ekman] = votes.get(ekman, 0) + 1
+        ekman = idx2ekman.get(int(idx), "neutral")
+        votes[ekman] = votes.get(ekman, 0) + 1
 
-    if not votes:
-        return EKMAN_LABEL2ID["neutral"]
-
-    # Pick class with most votes; prefer non-neutral on tie
     best = max(votes, key=lambda k: (votes[k], k != "neutral"))
     return EKMAN_LABEL2ID[best]
 
 
-# ── Dataset loaders ─────────────────────────────────────────────────
+# ── Individual dataset loaders ──────────────────────────────────────
 
-def load_ru_go_emotions(seed: int = 42) -> Tuple[DatasetDict, List[str]]:
+def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
     """
-    Load Ru-GoEmotions from HuggingFace and convert to single-label Ekman (7 classes).
-    Falls back to the original English GoEmotions if the Russian version is unavailable.
-
-    Returns:
-        dataset  — DatasetDict with 'train'/'validation'/'test', columns: text, label
-        label_names — list of 7 Ekman class names
+    seara/ru_go_emotions — Russian translation of Google GoEmotions.
+    config='simplified' (~54k) or 'raw' (~211k, noisier).
+    28 multi-label emotions → Ekman 7 single-label.
     """
-    candidates = [
-        ("s-nlp/ru_go_emotions", None),
-        ("google-research-datasets/go_emotions", "simplified"),
-        ("google-research-datasets/go_emotions", "raw"),
-    ]
+    print(f"Loading seara/ru_go_emotions ({config})...")
+    ds = load_dataset("seara/ru_go_emotions", config)
 
-    ds = None
-    for name, config in candidates:
-        try:
-            print(f"Trying: {name}" + (f" ({config})" if config else ""))
-            ds = load_dataset(name, config)
-            print(f"  Loaded successfully")
-            break
-        except Exception as e:
-            print(f"  Failed: {e}")
+    text_col  = "text"
+    label_col = next(c for c in ds["train"].column_names if "label" in c.lower())
 
-    if ds is None:
-        raise RuntimeError("Could not load Ru-GoEmotions. Check your internet connection or HuggingFace token.")
+    def _convert(ex):
+        ids = [int(x) for x in (ex.get(label_col) or [])]
+        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, GOEMOTION_IDX2NAME | {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()})}
 
-    # Normalize split names
-    for old, new in [("dev", "validation"), ("development", "validation")]:
+    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    return ds
+
+
+def load_cedr() -> DatasetDict:
+    """
+    cedr — Corpus for Emotion Detection in Russian.
+    Native Russian texts from blogs, news, Twitter.
+    5 multi-label emotion classes → Ekman 7 (neutral inferred from empty label set).
+    """
+    print("Loading cedr...")
+    try:
+        ds = load_dataset("cedr")
+    except Exception:
+        ds = load_dataset("sagteam/cedr_v1")
+
+    # CEDR has binary columns per emotion or a list — handle both
+    sample = ds["train"].column_names
+
+    def _convert(ex):
+        # Format A: separate binary columns — joy, sadness, surprise, fear, anger
+        if "joy" in sample:
+            present = [i for i, col in enumerate(["joy", "sadness", "surprise", "fear", "anger"])
+                       if ex.get(col, 0)]
+        # Format B: 'labels' list of ints
+        elif "labels" in sample:
+            present = [int(x) for x in (ex.get("labels") or [])]
+        else:
+            present = []
+
+        text = ex.get("text") or ex.get("sentence") or ""
+        return {"text": text, "label": _multilabel_to_ekman(present, CEDR_IDX2EKMAN)}
+
+    remove = [c for c in sample if c not in ("text", "sentence")]
+    ds = ds.map(_convert, remove_columns=remove)
+    if "sentence" in ds["train"].column_names:
+        ds = ds.rename_column("sentence", "text")
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    return ds
+
+
+def load_ru_izard_emotions() -> DatasetDict:
+    """
+    Djacon/ru-izard-emotions — ~30k Russian texts (DeepL translation from GoEmotions).
+    10 Izard emotion classes → Ekman 7.
+    """
+    print("Loading Djacon/ru-izard-emotions...")
+    ds = load_dataset("Djacon/ru-izard-emotions")
+
+    label_col = next((c for c in ds["train"].column_names if "label" in c.lower()), None)
+    text_col  = next((c for c in ds["train"].column_names if "text" in c.lower()), ds["train"].column_names[0])
+
+    def _convert(ex):
+        ids = [int(x) for x in (ex.get(label_col) or [])] if label_col else []
+        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+
+    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    return ds
+
+
+def _normalize_splits(ds: DatasetDict) -> DatasetDict:
+    """Standardize split names and ensure train/validation/test exist."""
+    for old, new in [("dev", "validation"), ("development", "validation"), ("valid", "validation")]:
         if old in ds and new not in ds:
             ds[new] = ds.pop(old)
-
-    # Detect text and label columns
-    sample = ds[list(ds.keys())[0]]
-    text_col = next((c for c in sample.column_names if "text" in c.lower()), sample.column_names[0])
-    label_col = next((c for c in sample.column_names if "label" in c.lower()), None)
-
-    def _convert(example):
-        raw = example.get(label_col) or []
-        # Handle both list-of-ints and list-of-strings
-        if raw and isinstance(raw[0], str):
-            ids = [EKMAN_LABEL2ID.get(EMOTION_TO_EKMAN.get(r.lower(), "neutral"), 6) for r in raw]
-        else:
-            ids = [int(x) for x in raw]
-        return {"text": example[text_col], "label": _multilabel_to_ekman(ids)}
-
-    ds = ds.map(_convert, remove_columns=sample.column_names)
-
-    # Ensure validation split
     if "validation" not in ds and "test" in ds:
         ds["validation"] = ds["test"]
+    return ds
 
-    return ds, EKMAN_LABEL_NAMES
 
+# ── Multi-dataset merge ─────────────────────────────────────────────
+
+def merge_datasets(
+    datasets: Dict[str, DatasetDict],
+    test_size: float = 0.15,
+    val_size:  float = 0.15,
+    seed:      int   = 42,
+) -> DatasetDict:
+    """
+    Concatenate multiple DatasetDicts (each must have 'text' and 'label' columns)
+    and re-split into train / validation / test, stratified by label.
+    """
+    print("\nMerging datasets...")
+    all_records = []
+    for name, ds in datasets.items():
+        for split in ds:
+            df = ds[split].to_pandas()[["text", "label"]]
+            df["source"] = name
+            all_records.append(df)
+        print(f"  {name}: {sum(len(ds[s]) for s in ds):,} examples")
+
+    full_df = pd.concat(all_records, ignore_index=True)
+    full_df = full_df.dropna(subset=["text", "label"])
+    full_df["label"] = full_df["label"].astype(int)
+
+    print(f"\nTotal before split: {len(full_df):,}")
+    print("Label distribution:")
+    for lbl, cnt in sorted(full_df["label"].value_counts().items()):
+        print(f"  {EKMAN_ID2LABEL[lbl]:<12s}: {cnt:>6,}  ({cnt/len(full_df)*100:.1f}%)")
+
+    train_df, test_df = train_test_split(
+        full_df, test_size=test_size, random_state=seed, stratify=full_df["label"]
+    )
+    train_df, val_df = train_test_split(
+        train_df, test_size=val_size, random_state=seed, stratify=train_df["label"]
+    )
+
+    merged = DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    })
+    print(f"\nFinal splits:")
+    for split in merged:
+        print(f"  {split:12s}: {len(merged[split]):,}")
+    return merged
+
+
+# ── CSV / Kaggle helpers ────────────────────────────────────────────
 
 def load_from_csv(
     filepath: str,
@@ -135,13 +225,11 @@ def load_from_csv(
     label_col: str = "label",
     label_names: Optional[List[str]] = None,
     test_size: float = 0.15,
-    val_size: float = 0.15,
+    val_size:  float = 0.15,
     seed: int = 42,
 ) -> Tuple[DatasetDict, List[str]]:
-    """Load a CSV with text + label columns. Labels can be strings or integers."""
     df = pd.read_csv(filepath)
 
-    # Auto-detect columns
     if text_col not in df.columns:
         cands = [c for c in df.columns if any(k in c.lower() for k in ("text", "review", "content", "comment"))]
         text_col = cands[0] if cands else df.columns[0]
@@ -156,7 +244,6 @@ def load_from_csv(
 
     df = df[[text_col, label_col]].rename(columns={text_col: "text", label_col: "label"}).dropna(subset=["text"])
 
-    # Build label vocab if labels are strings
     if df["label"].dtype == object:
         if label_names is None:
             label_names = sorted(df["label"].unique().tolist())
@@ -181,30 +268,31 @@ def load_from_csv(
     return ds, label_names
 
 
+# ── Main entry point ────────────────────────────────────────────────
+
 def load_data(
-    csv_path: Optional[str] = None,
-    use_ekman: bool = True,
-    seed: int = 42,
+    csv_path:  Optional[str] = None,
+    use_all:   bool = True,
+    seed:      int  = 42,
 ) -> Tuple[DatasetDict, List[str], Dict]:
     """
-    Main entry point.
+    Load and (optionally) merge all available Russian emotion datasets.
+
+    use_all=True  → merge seara/ru_go_emotions + cedr + Djacon/ru-izard-emotions
+    use_all=False → only seara/ru_go_emotions (fast, for debugging)
 
     Priority:
-      1. CSV file (csv_path)
-      2. Kaggle input CSV (auto-detect)
-      3. Ru-GoEmotions from HuggingFace (default)
-
-    Returns:
-        dataset     — DatasetDict
-        label_names — ordered list of class names
-        info        — split statistics
+      1. csv_path  (user-provided CSV)
+      2. /kaggle/input  (Kaggle CSV auto-detect)
+      3. HuggingFace datasets
     """
-    dataset, label_names = None, None
-
+    # User-provided CSV
     if csv_path and os.path.exists(csv_path):
-        dataset, label_names = load_from_csv(csv_path, seed=seed)
+        ds, label_names = load_from_csv(csv_path, seed=seed)
+        return ds, label_names, _compute_stats(ds, label_names)
 
-    elif os.path.exists("/kaggle/input"):
+    # Kaggle CSV auto-detect
+    if os.path.exists("/kaggle/input"):
         csv_files = []
         for root, _, files in os.walk("/kaggle/input"):
             for f in files:
@@ -213,16 +301,34 @@ def load_data(
         for path in sorted(csv_files, key=lambda p: any(k in p.lower() for k in ("emotion", "sentiment", "train")), reverse=True):
             try:
                 print(f"Trying Kaggle CSV: {path}")
-                dataset, label_names = load_from_csv(path, seed=seed)
-                break
+                ds, label_names = load_from_csv(path, seed=seed)
+                return ds, label_names, _compute_stats(ds, label_names)
             except Exception as e:
                 print(f"  Skipped: {e}")
 
-    if dataset is None:
-        dataset, label_names = load_ru_go_emotions(seed=seed)
+    # HuggingFace
+    all_ds: Dict[str, DatasetDict] = {}
+    loaders = [
+        ("ru_go_emotions",    load_ru_go_emotions),
+        ("cedr",              load_cedr),
+        ("ru_izard_emotions", load_ru_izard_emotions),
+    ] if use_all else [("ru_go_emotions", load_ru_go_emotions)]
 
-    info = _compute_stats(dataset, label_names)
-    return dataset, label_names, info
+    for name, loader in loaders:
+        try:
+            all_ds[name] = loader()
+        except Exception as e:
+            print(f"  WARNING: could not load {name}: {e}")
+
+    if not all_ds:
+        raise RuntimeError("Could not load any dataset.")
+
+    if len(all_ds) == 1:
+        ds = list(all_ds.values())[0]
+    else:
+        ds = merge_datasets(all_ds, test_size=0.15, val_size=0.15, seed=seed)
+
+    return ds, EKMAN_LABEL_NAMES, _compute_stats(ds, EKMAN_LABEL_NAMES)
 
 
 def _compute_stats(dataset: DatasetDict, label_names: List[str]) -> Dict:
