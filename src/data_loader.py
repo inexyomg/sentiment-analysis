@@ -217,6 +217,172 @@ def merge_datasets(
     return merged
 
 
+# ── Sentiment → Ekman (approximate) ───────────────────────────────
+# Используется для датасетов без разметки по эмоциям (только pos/neu/neg).
+# Маппинг приблизительный: negative охватывает sadness, anger, disgust.
+# Такие примеры добавляют объём, но снижают точность — учитывай при анализе.
+
+SENTIMENT_TO_EKMAN: Dict[str, str] = {
+    "positive": "joy",
+    "neutral":  "neutral",
+    "negative": "sadness",   # консервативный выбор; anger/disgust тоже возможны
+    # числовые варианты
+    "2": "joy", "1": "neutral", "0": "sadness",
+    2:   "joy",  1:  "neutral",  0:  "sadness",
+}
+
+
+def _sentiment_df_to_ekman(df: pd.DataFrame,
+                            text_col: str = "text",
+                            label_col: str = "label") -> pd.DataFrame:
+    """Convert pos/neu/neg sentiment labels → Ekman integer labels."""
+    df = df[[text_col, label_col]].rename(columns={text_col: "text", label_col: "raw_label"})
+    df = df.dropna(subset=["text", "raw_label"])
+    df["raw_label"] = df["raw_label"].astype(str).str.strip().str.lower()
+    df["label"] = df["raw_label"].map(lambda x: EKMAN_LABEL2ID.get(
+        SENTIMENT_TO_EKMAN.get(x, SENTIMENT_TO_EKMAN.get(x.split(".")[0], None)), None
+    ))
+    return df.dropna(subset=["label"])[["text", "label"]].copy()
+
+
+def load_rureviews(cache_dir: Optional[str] = None) -> DatasetDict:
+    """
+    sismetanin/rureviews — 90k balanced Russian e-commerce reviews.
+    3-class sentiment (pos/neu/neg) → approximate Ekman mapping.
+    Скачивается напрямую с GitHub (~11 MB CSV).
+    """
+    import urllib.request
+
+    URL = ("https://raw.githubusercontent.com/sismetanin/rureviews/master/"
+           "women-clothing-accessories.3-class.balanced.csv")
+
+    save_path = os.path.join(cache_dir or os.path.expanduser("~/.cache/rureviews"),
+                             "rureviews.csv")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    if not os.path.exists(save_path):
+        print(f"Downloading RuReviews → {save_path} ...")
+        urllib.request.urlretrieve(URL, save_path)
+
+    df = pd.read_csv(save_path, sep="\t" if "\t" in open(save_path).read(200) else ",")
+
+    # Auto-detect columns
+    text_col  = next((c for c in df.columns if "review" in c.lower() or "text" in c.lower()), df.columns[0])
+    label_col = next((c for c in df.columns if "sentiment" in c.lower() or "label" in c.lower() or "class" in c.lower()), df.columns[-1])
+
+    df = _sentiment_df_to_ekman(df, text_col, label_col)
+    df["label"] = df["label"].astype(int)
+
+    print(f"RuReviews: {len(df):,} examples (sentiment→Ekman, approx)")
+
+    train_df, test_df = train_test_split(df, test_size=0.15, random_state=42, stratify=df["label"])
+    train_df, val_df  = train_test_split(train_df, test_size=0.15, random_state=42, stratify=train_df["label"])
+
+    ds = DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    })
+    return _normalize_splits(ds)
+
+
+def load_rusentitweet(cache_dir: Optional[str] = None) -> DatasetDict:
+    """
+    sismetanin/rusentitweet — 13.4k manually annotated Russian tweets.
+    5-class (pos/neu/neg/speech/skip) → 3 usable classes → Ekman.
+    Скачивается с GitHub.
+    """
+    import urllib.request
+
+    URL = ("https://raw.githubusercontent.com/sismetanin/rusentitweet/master/"
+           "rusentitweet_full.csv")
+
+    save_path = os.path.join(cache_dir or os.path.expanduser("~/.cache/rusentitweet"),
+                             "rusentitweet.csv")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    if not os.path.exists(save_path):
+        print(f"Downloading RuSentiTweet → {save_path} ...")
+        urllib.request.urlretrieve(URL, save_path)
+
+    df = pd.read_csv(save_path)
+    text_col  = next((c for c in df.columns if "text" in c.lower() or "tweet" in c.lower()), df.columns[0])
+    label_col = next((c for c in df.columns if "sentiment" in c.lower() or "label" in c.lower()), df.columns[-1])
+
+    # Keep only pos/neu/neg; drop speech_act / skip
+    df = df[df[label_col].astype(str).str.lower().isin(["positive", "neutral", "negative",
+                                                          "pos", "neu", "neg", "0", "1", "2"])]
+    df = _sentiment_df_to_ekman(df, text_col, label_col)
+    df["label"] = df["label"].astype(int)
+
+    print(f"RuSentiTweet: {len(df):,} examples (sentiment→Ekman, approx)")
+
+    train_df, test_df = train_test_split(df, test_size=0.15, random_state=42, stratify=df["label"])
+    train_df, val_df  = train_test_split(train_df, test_size=0.15, random_state=42, stratify=train_df["label"])
+
+    ds = DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    })
+    return _normalize_splits(ds)
+
+
+def load_brighter(data_dir: str) -> DatasetDict:
+    """
+    BRIGHTER (SemEval-2025 Task 11) — Russian subset.
+    Полное покрытие 6 Ekman-эмоций, размечен через Яндекс Толоку.
+
+    Требует ручной загрузки:
+      1. Зарегистрируйся на https://www.codabench.org/competitions/3863/
+      2. Скачай архив и распакуй в папку data_dir
+      3. Передай путь к папке с CSV-файлами в этот функцию
+
+    Формат: multi-label с интенсивностью 0-3 для каждой эмоции.
+    Конвертируется в single-label Ekman по максимальной интенсивности.
+    """
+    import glob
+
+    csv_files = glob.glob(os.path.join(data_dir, "**", "*.csv"), recursive=True)
+    ru_files  = [f for f in csv_files if "rus" in os.path.basename(f).lower() or "ru" in os.path.basename(f).lower()]
+    target    = ru_files[0] if ru_files else (csv_files[0] if csv_files else None)
+
+    if not target:
+        raise FileNotFoundError(
+            f"No CSV files found in {data_dir}. "
+            "Download BRIGHTER from https://www.codabench.org/competitions/3863/"
+        )
+
+    df = pd.read_csv(target)
+    emotion_cols = [c for c in df.columns if c.lower() in EKMAN_LABEL_NAMES]
+    text_col     = next((c for c in df.columns if "text" in c.lower()), df.columns[0])
+
+    if not emotion_cols:
+        raise ValueError(f"Cannot find emotion columns in {df.columns.tolist()}")
+
+    def _row_to_ekman(row):
+        intensities = {col: float(row[col]) for col in emotion_cols}
+        best = max(intensities, key=intensities.get)
+        if intensities[best] == 0:
+            return EKMAN_LABEL2ID["neutral"]
+        return EKMAN_LABEL2ID.get(best.lower(), EKMAN_LABEL2ID["neutral"])
+
+    df["label"] = df.apply(_row_to_ekman, axis=1)
+    df = df[["text", "label"]].dropna()
+    df["label"] = df["label"].astype(int)
+
+    print(f"BRIGHTER (RU): {len(df):,} examples (native Ekman annotation)")
+
+    train_df, test_df = train_test_split(df, test_size=0.15, random_state=42, stratify=df["label"])
+    train_df, val_df  = train_test_split(train_df, test_size=0.15, random_state=42, stratify=train_df["label"])
+
+    return _normalize_splits(DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    }))
+
+
 # ── CSV / Kaggle helpers ────────────────────────────────────────────
 
 def load_from_csv(
@@ -271,20 +437,24 @@ def load_from_csv(
 # ── Main entry point ────────────────────────────────────────────────
 
 def load_data(
-    csv_path:  Optional[str] = None,
-    use_all:   bool = True,
-    seed:      int  = 42,
+    csv_path:           Optional[str] = None,
+    use_all:            bool = True,
+    include_sentiment:  bool = False,
+    brighter_dir:       Optional[str] = None,
+    seed:               int  = 42,
 ) -> Tuple[DatasetDict, List[str], Dict]:
     """
-    Load and (optionally) merge all available Russian emotion datasets.
+    Load and (optionally) merge Russian emotion datasets.
 
-    use_all=True  → merge seara/ru_go_emotions + cedr + Djacon/ru-izard-emotions
-    use_all=False → only seara/ru_go_emotions (fast, for debugging)
+    Параметры:
+      use_all           — объединить все 3 emotion-датасета (HF)
+      include_sentiment — добавить RuReviews + RuSentiTweet (sentiment→Ekman, приблизительно)
+      brighter_dir      — путь к распакованному BRIGHTER (если скачан вручную)
 
-    Priority:
-      1. csv_path  (user-provided CSV)
-      2. /kaggle/input  (Kaggle CSV auto-detect)
-      3. HuggingFace datasets
+    Приоритет источников:
+      1. csv_path  (пользовательский CSV)
+      2. /kaggle/input  (автопоиск CSV)
+      3. HuggingFace + опциональные источники
     """
     # User-provided CSV
     if csv_path and os.path.exists(csv_path):
@@ -306,7 +476,7 @@ def load_data(
             except Exception as e:
                 print(f"  Skipped: {e}")
 
-    # HuggingFace
+    # HuggingFace emotion datasets
     all_ds: Dict[str, DatasetDict] = {}
     loaders = [
         ("ru_go_emotions",    load_ru_go_emotions),
@@ -327,6 +497,29 @@ def load_data(
         ds = list(all_ds.values())[0]
     else:
         ds = merge_datasets(all_ds, test_size=0.15, val_size=0.15, seed=seed)
+
+    # Optional: BRIGHTER (requires manual download)
+    if brighter_dir and os.path.isdir(brighter_dir):
+        try:
+            brighter_ds = load_brighter(brighter_dir)
+            ds = merge_datasets(
+                {"emotion": ds, "brighter": brighter_ds},
+                test_size=0.15, val_size=0.15, seed=seed,
+            )
+        except Exception as e:
+            print(f"  WARNING: BRIGHTER load failed: {e}")
+
+    # Optional: sentiment datasets (approximate Ekman mapping)
+    if include_sentiment:
+        sentiment_ds: Dict[str, DatasetDict] = {"emotion": ds}
+        for name, loader in [("rureviews", load_rureviews), ("rusentitweet", load_rusentitweet)]:
+            try:
+                sentiment_ds[name] = loader()
+            except Exception as e:
+                print(f"  WARNING: {name} load failed: {e}")
+        if len(sentiment_ds) > 1:
+            print("\nNote: sentiment datasets mapped to Ekman approximately (pos→joy, neg→sadness, neu→neutral)")
+            ds = merge_datasets(sentiment_ds, test_size=0.15, val_size=0.15, seed=seed)
 
     return ds, EKMAN_LABEL_NAMES, _compute_stats(ds, EKMAN_LABEL_NAMES)
 
