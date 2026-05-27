@@ -19,7 +19,8 @@ from sklearn.metrics import classification_report
 _accuracy = evaluate.load("accuracy")
 _f1 = evaluate.load("f1")
 
-LABEL_NAMES = ["negative", "neutral", "positive"]
+# Default — overridden at call time via label_names parameter
+_DEFAULT_LABEL_NAMES = ["anger", "disgust", "fear", "joy", "sadness", "surprise", "neutral"]
 
 
 def _compute_metrics(eval_pred):
@@ -51,7 +52,8 @@ def train_model(
     model_name: str,
     dataset: DatasetDict,
     output_dir: str,
-    num_labels: int = 3,
+    num_labels: int = 7,
+    label_names: Optional[list] = None,
     num_epochs: int = 5,
     batch_size: int = 32,
     learning_rate: float = 2e-5,
@@ -62,7 +64,7 @@ def train_model(
     seed: int = 42,
     early_stopping_patience: int = 2,
 ) -> Tuple[object, object, Dict]:
-    """Fine-tune a pretrained transformer for sentiment classification."""
+    """Fine-tune a pretrained transformer for emotion classification."""
 
     print(f"\n{'='*60}")
     print(f"Model : {model_name}")
@@ -121,13 +123,16 @@ def train_model(
     labels = test_out.label_ids
     probs = torch.softmax(torch.tensor(test_out.predictions, dtype=torch.float), dim=-1).numpy()
 
+    lnames = label_names or _DEFAULT_LABEL_NAMES[:num_labels]
+
     print(f"\n--- Test results: {model_name} ---")
-    print(classification_report(labels, preds, target_names=LABEL_NAMES))
+    print(classification_report(labels, preds, target_names=lnames))
 
     results = {
         "model_name": model_name,
+        "label_names": lnames,
         "train_metrics": train_result.metrics,
-        "test_report": classification_report(labels, preds, target_names=LABEL_NAMES, output_dict=True),
+        "test_report": classification_report(labels, preds, target_names=lnames, output_dict=True),
         "predictions": preds.tolist(),
         "probabilities": probs.tolist(),
         "true_labels": labels.tolist(),

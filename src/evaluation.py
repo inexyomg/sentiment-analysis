@@ -11,7 +11,7 @@ from sklearn.metrics import (
 )
 from typing import Dict, List, Optional
 
-LABEL_NAMES = ["negative", "neutral", "positive"]
+DEFAULT_LABEL_NAMES = ["anger", "disgust", "fear", "joy", "sadness", "surprise", "neutral"]
 
 
 def evaluate_predictions(
@@ -19,7 +19,10 @@ def evaluate_predictions(
     y_pred: np.ndarray,
     y_prob: Optional[np.ndarray] = None,
     model_name: str = "Model",
+    label_names: Optional[List[str]] = None,
 ) -> Dict:
+    lnames = label_names or DEFAULT_LABEL_NAMES
+
     metrics = {
         "model": model_name,
         "accuracy": accuracy_score(y_true, y_pred),
@@ -33,8 +36,8 @@ def evaluate_predictions(
         except ValueError:
             pass
 
-    per_class = classification_report(y_true, y_pred, target_names=LABEL_NAMES, output_dict=True)
-    for cls in LABEL_NAMES:
+    per_class = classification_report(y_true, y_pred, target_names=lnames, output_dict=True)
+    for cls in lnames:
         metrics[f"f1_{cls}"] = per_class[cls]["f1-score"]
 
     return metrics
@@ -44,12 +47,15 @@ def plot_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     model_name: str = "Model",
+    label_names: Optional[List[str]] = None,
     save_path: Optional[str] = None,
 ) -> plt.Figure:
+    lnames = label_names or DEFAULT_LABEL_NAMES
+
     cm = confusion_matrix(y_true, y_pred)
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     for ax, data, fmt, title in zip(
         axes,
         [cm, cm_norm],
@@ -57,7 +63,7 @@ def plot_confusion_matrix(
         ["Counts", "Normalized"],
     ):
         sns.heatmap(data, annot=True, fmt=fmt, cmap="Blues", ax=ax,
-                    xticklabels=LABEL_NAMES, yticklabels=LABEL_NAMES)
+                    xticklabels=lnames, yticklabels=lnames)
         ax.set_title(f"{model_name} — {title}")
         ax.set_ylabel("True")
         ax.set_xlabel("Predicted")

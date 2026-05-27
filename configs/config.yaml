@@ -1,11 +1,19 @@
 data:
-  dataset_name: "sepidmnorozy/Russian_sentiment"
-  text_column: "text"
-  label_column: "label"
+  dataset: "s-nlp/ru_go_emotions"   # Ru-GoEmotions, 28 эмоций → 7 Ekman классов
   max_length: 128
   test_size: 0.15
   val_size: 0.15
   seed: 42
+
+# 7 классов по таксономии Ekman
+labels:
+  0: anger
+  1: disgust
+  2: fear
+  3: joy
+  4: sadness
+  5: surprise
+  6: neutral
 
 models:
   rubert:
@@ -39,16 +47,11 @@ models:
     weight_decay: 0.01
 
 training:
+  num_labels: 7
   seed: 42
   fp16: true
   early_stopping_patience: 2
   logging_steps: 100
-  num_labels: 3
-
-labels:
-  0: "negative"
-  1: "neutral"
-  2: "positive"
 
 ensemble:
   methods:
