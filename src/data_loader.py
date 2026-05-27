@@ -328,6 +328,87 @@ def load_rusentitweet(cache_dir: Optional[str] = None) -> DatasetDict:
     return _normalize_splits(ds)
 
 
+def load_brighter_hf() -> DatasetDict:
+    """
+    BRIGHTER (SemEval-2025 Task 11) via HuggingFace mirror.
+    brighter-dataset/BRIGHTER-emotion-categories, Russian subset.
+    6 Ekman emotions, Toloka-annotated native Russian texts.
+    """
+    print("Loading brighter-dataset/BRIGHTER-emotion-categories (rus)...")
+    ds = load_dataset("brighter-dataset/BRIGHTER-emotion-categories", "rus")
+
+    cols = ds["train"].column_names
+    text_col = next((c for c in cols if "text" in c.lower()), cols[0])
+    emotion_cols = [c for c in cols if c.lower() in EKMAN_LABEL_NAMES]
+
+    if emotion_cols:
+        def _to_ekman_multi(ex):
+            scores = {c: float(ex.get(c, 0) or 0) for c in emotion_cols}
+            best = max(scores, key=scores.get)
+            label = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
+            return {"text": ex[text_col], "label": label}
+        ds = ds.map(_to_ekman_multi, remove_columns=cols)
+    else:
+        label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
+        if not label_col:
+            raise ValueError(f"Cannot find emotion columns in: {cols}")
+        def _to_ekman_single(ex):
+            raw = str(ex.get(label_col, "neutral")).strip().lower()
+            return {"text": ex[text_col], "label": EKMAN_LABEL2ID.get(raw, EKMAN_LABEL2ID["neutral"])}
+        ds = ds.map(_to_ekman_single, remove_columns=cols)
+
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER-HF, native Ekman)")
+    return ds
+
+
+def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
+    """
+    KELONMYOSA/dusha_emotion_audio — ~300k native Russian speech transcripts.
+    4 emotion classes: angry, sad, neutral, positive → Ekman 7.
+    Audio columns are ignored; only text transcripts are used.
+    max_samples caps examples per split to avoid memory pressure (None = no limit).
+    """
+    DUSHA_TO_EKMAN: Dict[str, str] = {
+        "angry":    "anger",
+        "sad":      "sadness",
+        "neutral":  "neutral",
+        "positive": "joy",
+    }
+
+    print("Loading KELONMYOSA/dusha_emotion_audio...")
+    ds = load_dataset("KELONMYOSA/dusha_emotion_audio")
+
+    cols = ds["train"].column_names
+    text_col  = next((c for c in cols if "text" in c.lower() or "transcript" in c.lower()), None)
+    label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower() or "tag" in c.lower()), None)
+
+    if not text_col:
+        raise ValueError(f"Cannot find text column in Dusha. Columns: {cols}")
+    if not label_col:
+        raise ValueError(f"Cannot find label column in Dusha. Columns: {cols}")
+
+    audio_cols = [c for c in cols if any(k in c.lower() for k in ("audio", "wav", "path", "file", "array"))]
+    remove_cols = [c for c in cols if c not in (text_col, label_col) or c in audio_cols]
+
+    def _convert(ex):
+        raw = str(ex[label_col]).strip().lower()
+        ekman = DUSHA_TO_EKMAN.get(raw)
+        label = EKMAN_LABEL2ID[ekman] if ekman else -1
+        return {"text": str(ex[text_col] or ""), "label": label}
+
+    ds = ds.map(_convert, remove_columns=remove_cols)
+
+    for split in list(ds.keys()):
+        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"].strip()) > 3)
+        if max_samples and len(ds[split]) > max_samples:
+            ds[split] = ds[split].shuffle(seed=42).select(range(max_samples))
+
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (Dusha, native RU)")
+    return ds
+
+
 def load_brighter(data_dir: str) -> DatasetDict:
     """
     BRIGHTER (SemEval-2025 Task 11) — Russian subset.
@@ -441,6 +522,8 @@ def load_data(
     use_all:            bool = True,
     include_sentiment:  bool = False,
     brighter_dir:       Optional[str] = None,
+    use_brighter_hf:    bool = False,
+    use_dusha:          bool = False,
     seed:               int  = 42,
 ) -> Tuple[DatasetDict, List[str], Dict]:
     """
@@ -450,6 +533,8 @@ def load_data(
       use_all           — объединить все 3 emotion-датасета (HF)
       include_sentiment — добавить RuReviews + RuSentiTweet (sentiment→Ekman, приблизительно)
       brighter_dir      — путь к распакованному BRIGHTER (если скачан вручную)
+      use_brighter_hf   — загрузить BRIGHTER с HuggingFace (brighter-dataset/BRIGHTER-emotion-categories)
+      use_dusha         — добавить Dusha (~300k нативных RU транскриптов, KELONMYOSA/dusha_emotion_audio)
 
     Приоритет источников:
       1. csv_path  (пользовательский CSV)
@@ -498,7 +583,7 @@ def load_data(
     else:
         ds = merge_datasets(all_ds, test_size=0.15, val_size=0.15, seed=seed)
 
-    # Optional: BRIGHTER (requires manual download)
+    # Optional: BRIGHTER manual download
     if brighter_dir and os.path.isdir(brighter_dir):
         try:
             brighter_ds = load_brighter(brighter_dir)
@@ -507,7 +592,29 @@ def load_data(
                 test_size=0.15, val_size=0.15, seed=seed,
             )
         except Exception as e:
-            print(f"  WARNING: BRIGHTER load failed: {e}")
+            print(f"  WARNING: BRIGHTER (local) load failed: {e}")
+
+    # Optional: BRIGHTER via HuggingFace mirror
+    if use_brighter_hf:
+        try:
+            brighter_ds = load_brighter_hf()
+            ds = merge_datasets(
+                {"emotion": ds, "brighter_hf": brighter_ds},
+                test_size=0.15, val_size=0.15, seed=seed,
+            )
+        except Exception as e:
+            print(f"  WARNING: BRIGHTER-HF load failed: {e}")
+
+    # Optional: Dusha (~300k native RU transcripts)
+    if use_dusha:
+        try:
+            dusha_ds = load_dusha()
+            ds = merge_datasets(
+                {"emotion": ds, "dusha": dusha_ds},
+                test_size=0.15, val_size=0.15, seed=seed,
+            )
+        except Exception as e:
+            print(f"  WARNING: Dusha load failed: {e}")
 
     # Optional: sentiment datasets (approximate Ekman mapping)
     if include_sentiment:
