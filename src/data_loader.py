@@ -437,38 +437,130 @@ def load_stage2_clean(
     return merge_datasets(sources, test_size=0.15, val_size=0.15, seed=seed)
 
 
-def load_brighter_hf() -> DatasetDict:
+def load_brighter_hf(
+    kaggle_dataset: str = "aylinnaebzadeh/semeval-2025-task-11-emotion",
+) -> DatasetDict:
     """
-    BRIGHTER (SemEval-2025 Task 11) via HuggingFace mirror.
-    brighter-dataset/BRIGHTER-emotion-categories, Russian subset.
-    6 Ekman emotions, Toloka-annotated native Russian texts.
+    BRIGHTER (SemEval-2025 Task 11) — Russian subset, 6 Ekman emotions.
+    Toloka-annotated native Russian texts.
+
+    Tries sources in order:
+      1. /kaggle/input/<slug>/  — if dataset is attached to Kaggle notebook
+      2. brighter-dataset/BRIGHTER-emotion-categories on HuggingFace
+      3. Kaggle API download  (requires KAGGLE_USERNAME / KAGGLE_KEY or ~/.kaggle/kaggle.json)
     """
-    print("Loading brighter-dataset/BRIGHTER-emotion-categories (rus)...")
-    ds = load_dataset("brighter-dataset/BRIGHTER-emotion-categories", "rus")
+    import glob, tempfile
 
-    cols = ds["train"].column_names
-    text_col = next((c for c in cols if "text" in c.lower()), cols[0])
-    emotion_cols = [c for c in cols if c.lower() in EKMAN_LABEL_NAMES]
+    EKMAN_INTENSITY_COLS = [e for e in EKMAN_LABEL_NAMES if e != "neutral"]
 
-    if emotion_cols:
-        def _to_ekman_multi(ex):
-            scores = {c: float(ex.get(c, 0) or 0) for c in emotion_cols}
-            best = max(scores, key=scores.get)
-            label = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
-            return {"text": ex[text_col], "label": label}
-        ds = ds.map(_to_ekman_multi, remove_columns=cols)
-    else:
-        label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
-        if not label_col:
-            raise ValueError(f"Cannot find emotion columns in: {cols}")
-        def _to_ekman_single(ex):
-            raw = str(ex.get(label_col, "neutral")).strip().lower()
-            return {"text": ex[text_col], "label": EKMAN_LABEL2ID.get(raw, EKMAN_LABEL2ID["neutral"])}
-        ds = ds.map(_to_ekman_single, remove_columns=cols)
+    def _csv_to_dataset(csv_path: str) -> DatasetDict:
+        df = pd.read_csv(csv_path)
+        text_col    = next((c for c in df.columns if "text" in c.lower()), df.columns[0])
+        emotion_cols = [c for c in df.columns if c.lower() in EKMAN_LABEL_NAMES]
 
-    ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER-HF, native Ekman)")
-    return ds
+        if not emotion_cols:
+            raise ValueError(f"No emotion columns in {csv_path}. Columns: {df.columns.tolist()}")
+
+        def _row_label(row):
+            scores = {c: float(row[c]) if pd.notna(row[c]) else 0.0 for c in emotion_cols}
+            best   = max(scores, key=scores.get)
+            return EKMAN_LABEL2ID[best.lower()] if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
+
+        df["label"] = df.apply(_row_label, axis=1)
+        df = df[[text_col, "label"]].rename(columns={text_col: "text"}).dropna()
+        df["label"] = df["label"].astype(int)
+        return df
+
+    def _df_to_splits(df: pd.DataFrame) -> DatasetDict:
+        train_df, test_df = train_test_split(df, test_size=0.15, random_state=42, stratify=df["label"])
+        train_df, val_df  = train_test_split(train_df, test_size=0.15, random_state=42, stratify=train_df["label"])
+        return _normalize_splits(DatasetDict({
+            "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+            "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+            "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+        }))
+
+    def _hf_to_dataset() -> DatasetDict:
+        ds = load_dataset("brighter-dataset/BRIGHTER-emotion-categories", "rus")
+        cols     = ds["train"].column_names
+        text_col = next((c for c in cols if "text" in c.lower()), cols[0])
+        emo_cols = [c for c in cols if c.lower() in EKMAN_LABEL_NAMES]
+
+        if emo_cols:
+            def _to_ekman_multi(ex):
+                scores = {c: float(ex.get(c, 0) or 0) for c in emo_cols}
+                best   = max(scores, key=scores.get)
+                label  = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
+                return {"text": ex[text_col], "label": label}
+            ds = ds.map(_to_ekman_multi, remove_columns=cols)
+        else:
+            lc = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
+            if not lc:
+                raise ValueError(f"Cannot find emotion columns in HF BRIGHTER: {cols}")
+            def _to_ekman_single(ex):
+                raw = str(ex.get(lc, "neutral")).strip().lower()
+                return {"text": ex[text_col], "label": EKMAN_LABEL2ID.get(raw, EKMAN_LABEL2ID["neutral"])}
+            ds = ds.map(_to_ekman_single, remove_columns=cols)
+
+        return _normalize_splits(ds)
+
+    # ── 1. Kaggle input path (dataset attached to notebook) ────────────────
+    slug = kaggle_dataset.split("/")[-1]   # "semeval-2025-task-11-emotion"
+    kaggle_input = f"/kaggle/input/{slug}"
+    if os.path.isdir(kaggle_input):
+        csv_files = glob.glob(os.path.join(kaggle_input, "**", "*.csv"), recursive=True)
+        ru_files  = [f for f in csv_files if "rus" in os.path.basename(f).lower()
+                     or "_ru" in os.path.basename(f).lower()
+                     or "/rus" in f.lower()]
+        target = ru_files[0] if ru_files else (csv_files[0] if csv_files else None)
+        if target:
+            try:
+                print(f"  Loading BRIGHTER from Kaggle input: {target}")
+                df = _csv_to_dataset(target)
+                ds = _df_to_splits(df)
+                print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER/Kaggle-input)")
+                return ds
+            except Exception as e:
+                print(f"    ✗ Kaggle input parse failed: {e}")
+
+    # ── 2. HuggingFace ──────────────────────────────────────────────────────
+    try:
+        print("  Loading brighter-dataset/BRIGHTER-emotion-categories (HuggingFace)...")
+        ds = _hf_to_dataset()
+        print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER/HuggingFace)")
+        return ds
+    except Exception as e:
+        print(f"    ✗ HuggingFace failed: {e}")
+
+    # ── 3. Kaggle API download ──────────────────────────────────────────────
+    try:
+        import kaggle as _kaggle
+        _kaggle.api.authenticate()
+        print(f"  Downloading {kaggle_dataset} via Kaggle API...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _kaggle.api.dataset_download_files(kaggle_dataset, path=tmpdir, unzip=True)
+            csv_files = glob.glob(os.path.join(tmpdir, "**", "*.csv"), recursive=True)
+            ru_files  = [f for f in csv_files if "rus" in os.path.basename(f).lower()
+                         or "_ru" in os.path.basename(f).lower()]
+            target = ru_files[0] if ru_files else (csv_files[0] if csv_files else None)
+            if not target:
+                raise FileNotFoundError(f"No CSV found after download. Files: {csv_files}")
+            df = _csv_to_dataset(target)
+            ds = _df_to_splits(df)
+        print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER/Kaggle-API)")
+        return ds
+    except ImportError:
+        print("    ✗ kaggle package not installed (pip install kaggle)")
+    except Exception as e:
+        print(f"    ✗ Kaggle API failed: {e}")
+
+    raise RuntimeError(
+        "Could not load BRIGHTER from any source.\n"
+        "Options:\n"
+        f"  • On Kaggle: attach dataset '{kaggle_dataset}' as notebook input\n"
+        "  • Install kaggle package and set KAGGLE_USERNAME / KAGGLE_KEY\n"
+        "  • Check HuggingFace network access"
+    )
 
 
 def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
