@@ -7,6 +7,8 @@ from .data_loader import (
     load_brighter,
     load_brighter_hf,
     load_dusha,
+    load_aniemore_resd,
+    load_stage2_clean,
     load_rureviews,
     load_rusentitweet,
     merge_datasets,
@@ -15,7 +17,7 @@ from .data_loader import (
     EKMAN_LABEL2ID,
 )
 from .preprocessor import clean_text, preprocess_batch
-from .trainer import train_model, get_predictions, tune_thresholds
+from .trainer import train_model, train_two_stage, get_predictions, tune_thresholds
 from .evaluation import evaluate_predictions, compare_models, plot_confusion_matrix
 from .ensemble import (
     hard_voting,
