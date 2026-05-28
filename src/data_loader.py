@@ -747,7 +747,7 @@ def load_data(
       include_sentiment — добавить RuReviews + RuSentiTweet (sentiment→Ekman, приблизительно)
       brighter_dir      — путь к распакованному BRIGHTER (если скачан вручную)
       use_brighter_hf   — загрузить BRIGHTER с HuggingFace (brighter-dataset/BRIGHTER-emotion-categories)
-      use_dusha         — добавить Dusha (~300k нативных RU транскриптов, KELONMYOSA/dusha_emotion_audio)
+      use_dusha         — добавить Dusha (~300k нативных RU транскриптов, SberDevices/Dusha)
       use_aniemore      — добавить Aniemore/resd (~4.5k нативных RU, 7 классов включая disgust)
 
     Приоритет источников:
