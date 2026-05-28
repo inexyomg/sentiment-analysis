@@ -256,13 +256,17 @@ def _normalize_splits(ds: DatasetDict, seed: int = 42) -> DatasetDict:
 
 def merge_datasets(
     datasets: Dict[str, DatasetDict],
-    test_size: float = 0.15,
-    val_size:  float = 0.15,
-    seed:      int   = 42,
+    test_size:     float = 0.15,
+    val_size:      float = 0.15,
+    seed:          int   = 42,
+    max_per_class: Optional[int] = None,
 ) -> DatasetDict:
     """
     Concatenate multiple DatasetDicts (each must have 'text' and 'label' columns)
     and re-split into train / validation / test, stratified by label.
+
+    max_per_class — cap per label before splitting (applied to the full pool,
+                    so all splits stay proportional).
     """
     print("\nMerging datasets...")
     all_records = []
@@ -281,6 +285,16 @@ def merge_datasets(
     print("Label distribution:")
     for lbl, cnt in sorted(full_df["label"].value_counts().items()):
         print(f"  {EKMAN_ID2LABEL[lbl]:<12s}: {cnt:>6,}  ({cnt/len(full_df)*100:.1f}%)")
+
+    if max_per_class is not None:
+        full_df = (
+            full_df
+            .groupby("label", group_keys=False)
+            .apply(lambda g: g.sample(min(len(g), max_per_class), random_state=seed))
+            .sample(frac=1, random_state=seed)
+            .reset_index(drop=True)
+        )
+        print(f"\nAfter cap ({max_per_class:,}/class): {len(full_df):,} examples")
 
     train_df, test_df = train_test_split(
         full_df, test_size=test_size, random_state=seed, stratify=full_df["label"]
