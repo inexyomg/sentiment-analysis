@@ -810,7 +810,7 @@ def load_brighter_hf() -> DatasetDict:
 
 
 def load_dusha(
-    max_samples: Optional[int] = 50_000,
+    max_samples: Optional[int] = None,
     local_dir: Optional[str] = None,
 ) -> DatasetDict:
     """
