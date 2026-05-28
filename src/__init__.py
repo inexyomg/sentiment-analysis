@@ -30,3 +30,4 @@ from .ensemble import (
     temperature_scaling,
 )
 from .inference import EmotionClassifier
+from .augmentation import TextAugmenter, augment_rare_classes
