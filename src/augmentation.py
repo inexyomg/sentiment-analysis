@@ -66,9 +66,9 @@ class TextAugmenter:
                 outputs = self._para_model.generate(
                     **inputs,
                     num_return_sequences=n_variants,
-                    num_beam_groups=n_variants,
-                    num_beams=n_variants,
-                    diversity_penalty=2.0,
+                    do_sample=True,
+                    temperature=0.8,
+                    top_p=0.95,
                     repetition_penalty=3.0,
                     max_length=max_length,
                 )
