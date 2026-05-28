@@ -917,36 +917,23 @@ def load_dusha(
             return None
 
         df = pd.concat(parts, ignore_index=True)
-
         cols = list(df.columns)
-        text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
-        label_col = _find_col(cols, LABEL_COL_CANDIDATES)
+
+        # Sber Dusha crowd files: keep only rows where annotator and speaker agree.
+        # annotator_emo == speaker_emo means both perceived the same emotion.
+        if "annotator_emo" in df.columns and "speaker_emo" in df.columns:
+            before = len(df)
+            df = df[df["annotator_emo"] == df["speaker_emo"]]
+            print(f"    annotator_emo == speaker_emo: {before:,} → {len(df):,} rows ({len(df)/before*100:.0f}% kept)")
+            text_col  = "speaker_text" if "speaker_text" in df.columns else _find_col(cols, TEXT_COL_CANDIDATES)
+            label_col = "annotator_emo"
+        else:
+            text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
+            label_col = _find_col(cols, LABEL_COL_CANDIDATES)
 
         if not text_col or not label_col:
             print(f"    ✗ local: cannot find text/label columns. cols={cols}")
             return None
-
-        # Crowd files: multiple annotator rows per utterance — aggregate by majority vote.
-        # Regular files: drop exact duplicates.
-        texts_per_row = df[text_col].nunique()
-        is_crowd = len(df) > texts_per_row * 1.5  # >1.5 rows/text → crowd annotations
-        if is_crowd:
-            before = len(df)
-            df = (
-                df[[text_col, label_col]]
-                .dropna()
-                .groupby(text_col, sort=False)[label_col]
-                .agg(lambda x: x.mode().iloc[0])  # majority vote
-                .reset_index()
-                .rename(columns={label_col: label_col})
-            )
-            print(f"    crowd aggregation: {before:,} annotations → {len(df):,} utterances (majority vote)")
-        else:
-            before = len(df)
-            df = df.drop_duplicates(subset=[text_col])
-            removed = before - len(df)
-            if removed:
-                print(f"    deduped: {before:,} → {len(df):,} rows (removed {removed:,} duplicates)")
 
         print(f"    columns → text='{text_col}', label='{label_col}'")
 
