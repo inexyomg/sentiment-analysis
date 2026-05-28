@@ -25,7 +25,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Блок 1: 01_data_preparation.ipynb                              │
-│  Загрузка 10+ датасетов → LLM-переразметка → аугментация        │
+│  Загрузка 10+ датасетов → ручная разметка → аугментация          │
 │  Сохранение stage1_data_augmented / stage2_data_augmented       │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -64,18 +64,18 @@
 | `brighter-dataset/BRIGHTER-emotion-categories` | ~3k RU | **нативный RU** | 6 | Stage 1 + **Stage 2** |
 | `Aniemore/resd` | ~4.5k | **нативный RU** | 7 (incl. disgust) | Stage 1 + **Stage 2** |
 | `Helsinki-NLP/XED` (ru) | ~17k | субтитры RU | 8 → 7 | Stage 1 |
-| `SberDevices/Dusha` | ~300k | **нативный RU** | 4 | Stage 1 (опционально) |
+| `SberDevices/Dusha` | ~300k | **нативный RU** | 4 | Stage 1 |
 
-### Сентиментальные + LLM-переразметка
+### Сентиментальные (ручная разметка → Ekman)
 
-Датасеты с грубой pos/neg/neu разметкой могут быть автоматически переразмечены в 7 классов Экмана с помощью `LLMAnnotator` (claude-haiku, ~$4 за 100k текстов):
+Датасеты с грубой pos/neg/neu разметкой размечены вручную в 7 классов Экмана и загружаются через `load_llm_annotated()`:
 
 | Датасет | Размер | Тип | Источник |
 |---|---|---|---|
 | `sismetanin/rureviews` | ~90k | отзывы (Wildberries) | e-commerce |
 | `sismetanin/rusentitweet` | ~13k | твиты | соцсети |
 
-> После LLM-переразметки данные сохраняются в JSONL-кеш и загружаются через `load_llm_annotated()`.
+> JSONL-файлы с разметкой добавляются на Kaggle как датасет и автоматически обнаруживаются в `/kaggle/input/`.
 
 ### Покрытие редких классов по источникам
 
@@ -92,7 +92,7 @@
 
 ## Зачем два Stage?
 
-**Stage 1** обучает на большом разнородном корпусе (~300k–500k примеров): переводные GoEmotions, субтитры XED, грубые сентиментные датасеты после LLM-переразметки. Задача — дать модели широкий эмоциональный словарь.
+**Stage 1** обучает на большом разнородном корпусе (~300k–500k примеров): переводные GoEmotions, субтитры XED, Dusha, ручная разметка rureviews/rusentitweet. Задача — дать модели широкий эмоциональный словарь.
 
 **Stage 2** дообучает на маленьком нативном RU (~10–20k): CEDR-M7, BRIGHTER, RESD — все размечены вручную на настоящих русских текстах. Задача — убрать «акцент» переводных данных и выровнять предсказания по точным Ekman-меткам.
 
@@ -119,33 +119,21 @@
 
 ---
 
-## LLM-переразметка сентиментных датасетов
+## Ручная разметка (rureviews + rusentitweet)
+
+Размеченные в 7 классов Экмана JSONL-файлы загружаются из Kaggle автоматически:
 
 ```python
-from src.llm_annotator import LLMAnnotator, annotate_dataset
-
-# Оценка стоимости
-ann = LLMAnnotator()
-print(ann.estimate_cost(90_000))
-# → ~$3.20 (claude-haiku-4-5)
-
-# Переразметка с JSONL-кешем (избегаем повторных вызовов API)
-ann.annotate_dataframe(
-    df=rureviews_df,
-    text_col="text",
-    cache_path="data/annotated/rureviews_ekman.jsonl",
-)
-
-# Загрузка готовой разметки в pipeline
 from src.data_loader import load_llm_annotated
-ds = load_llm_annotated(["data/annotated/rureviews_ekman.jsonl"])
+
+# Формат файла: {"text": "Отличная вещь!", "label": "joy"}
+ds = load_llm_annotated([
+    "/kaggle/input/rureviews-ekman/rureviews_ekman.jsonl",
+    "/kaggle/input/rusentitweet-ekman/rusentitweet_ekman.jsonl",
+])
 ```
 
-Ключевые особенности:
-- Батч-обработка (50 текстов/запрос)
-- Автоматическое восстановление после ошибок API (3 попытки, exponential backoff)
-- JSONL-кеш — повторный запуск не тратит API-квоту
-- Системный промпт на русском с чёткими определениями каждой эмоции
+Ноутбук автоматически ищет `*.jsonl` файлы в `/kaggle/input/` и подключает их если имя содержит `review`, `tweet`, `ekman` или `annotated`.
 
 ---
 
@@ -213,13 +201,6 @@ LR:       5e-6    Epochs: 3    Batch: 16
 pip install -r requirements.txt
 ```
 
-Для LLM-переразметки дополнительно:
-
-```bash
-pip install anthropic>=0.25
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
 ### Запуск пайплайна (Kaggle T4 GPU)
 
 ```
@@ -262,7 +243,6 @@ sentiment-analysis/
 │
 ├── src/
 │   ├── data_loader.py      — загрузчики 10+ датасетов, merge_datasets, load_stage2_clean
-│   ├── llm_annotator.py    — LLMAnnotator (Claude API), annotate_dataset, JSONL-кеш
 │   ├── preprocessor.py     — clean_text (HTML, URL, unicode, повторы) — без лемматизации
 │   ├── augmentation.py     — TextAugmenter (rut5 паrafраз + back-translation), augment_rare_classes
 │   ├── trainer.py          — WeightedTrainer (focal/CE), train_model, train_two_stage
@@ -332,7 +312,7 @@ sentencepiece, sacremoses                               — аугментаци
 peft>=0.6                                               — LoRA (опционально)
 transformers-interpret>=0.10                            — объяснимость
 pymorphy2, nltk                                         — для классических ML-базелайнов
-anthropic>=0.25                                         — LLM-переразметка (опционально)
+
 ```
 
 ---
