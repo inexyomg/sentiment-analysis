@@ -81,22 +81,38 @@ def _multilabel_to_ekman(label_ids, idx2ekman: Dict[int, str]) -> int:
 def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
     """
     seara/ru_go_emotions — Russian translation of Google GoEmotions.
-    config='simplified' (~54k) or 'raw' (~211k, noisier).
+    Columns: ru_text (Russian), text (English original), labels (list[int] 0-27), id.
+    config='simplified' (~54k) or 'raw' (~211k, noisier but more fear/disgust examples).
     28 multi-label emotions → Ekman 7 single-label.
     """
     print(f"Loading seara/ru_go_emotions ({config})...")
     ds = load_dataset("seara/ru_go_emotions", config)
 
-    text_col  = "text"
-    label_col = next(c for c in ds["train"].column_names if "label" in c.lower())
+    cols = ds["train"].column_names
+    # Russian text is in 'ru_text'; 'text' is the English original — we must use ru_text
+    text_col  = "ru_text" if "ru_text" in cols else next(
+        (c for c in cols if "ru" in c.lower() and "text" in c.lower()), "text"
+    )
+    label_col = next((c for c in cols if "label" in c.lower()), None)
+    if not label_col:
+        raise ValueError(f"Cannot find labels column in seara/ru_go_emotions. Columns: {cols}")
+
+    _idx2ekman = {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()}
 
     def _convert(ex):
-        ids = [int(x) for x in (ex.get(label_col) or [])]
-        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, GOEMOTION_IDX2NAME | {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()})}
+        raw = ex.get(label_col)
+        # labels is a list of ints [0-27]; handle edge case of single int too
+        if isinstance(raw, (list, tuple)):
+            ids = [int(x) for x in raw]
+        elif raw is not None:
+            ids = [int(raw)]
+        else:
+            ids = []
+        return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
 
-    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru_go_emotions/{config}, RU text)")
     return ds
 
 
@@ -142,20 +158,53 @@ def load_ru_izard_emotions() -> DatasetDict:
     """
     Djacon/ru-izard-emotions — ~30k Russian texts (DeepL translation from GoEmotions).
     10 Izard emotion classes → Ekman 7.
+
+    Dataset columns: text + either:
+      a) 'labels' — list of present Izard indices [0-9]  (multi-label)
+      b) 'label'  — single Izard index int
+      c) separate binary columns: Neutral, Joy, Sadness, Anger, Enthusiasm,
+                                   Surprise, Disgust, Fear, Guilt, Shame
     """
+    # Ordered by Izard index — must match IZARD_IDX2EKMAN keys
+    IZARD_COL_NAMES = ("neutral", "joy", "sadness", "anger", "enthusiasm",
+                       "surprise", "disgust", "fear", "guilt", "shame")
+
     print("Loading Djacon/ru-izard-emotions...")
     ds = load_dataset("Djacon/ru-izard-emotions")
 
-    label_col = next((c for c in ds["train"].column_names if "label" in c.lower()), None)
-    text_col  = next((c for c in ds["train"].column_names if "text" in c.lower()), ds["train"].column_names[0])
+    cols      = ds["train"].column_names
+    cols_low  = {c.lower(): c for c in cols}
+    text_col  = next((c for c in cols if "text" in c.lower()), cols[0])
 
-    def _convert(ex):
-        ids = [int(x) for x in (ex.get(label_col) or [])] if label_col else []
-        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    # Detect label format
+    label_col    = cols_low.get("labels") or cols_low.get("label")
+    emotion_cols = [cols_low[n] for n in IZARD_COL_NAMES if n in cols_low]
 
-    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    if label_col:
+        def _convert(ex):
+            raw = ex.get(label_col)
+            if isinstance(raw, (list, tuple)):
+                ids = [int(x) for x in raw]
+            elif raw is not None:
+                ids = [int(raw)]   # single int label
+            else:
+                ids = []
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    elif emotion_cols:
+        # Separate binary columns — collect indices of non-zero ones
+        def _convert(ex):
+            ids = [i for i, col in enumerate(emotion_cols) if ex.get(col, 0)]
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    else:
+        raise ValueError(
+            f"Cannot find label column in Djacon/ru-izard-emotions.\n"
+            f"Columns: {cols}\n"
+            f"Expected: 'label', 'labels', or individual emotion columns"
+        )
+
+    ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru-izard-emotions)")
     return ds
 
 
@@ -330,7 +379,7 @@ def load_rusentitweet(cache_dir: Optional[str] = None) -> DatasetDict:
 
 def load_aniemore_resd() -> DatasetDict:
     """
-    Aniemore/resd — Russian Emotional Speech Dataset.
+    Aniemore/resd (+ Aniemore/resd_annotated fallback) — Russian Emotional Speech Dataset.
     Native Russian speech transcripts, ~4.5k examples.
     7 classes: angry, disgust, enthusiasm, fear, happy, neutral, sad → Ekman 7.
     Покрывает disgust, которого нет в CEDR и Dusha — ценный источник для этапа 2.
@@ -349,28 +398,48 @@ def load_aniemore_resd() -> DatasetDict:
         "surprise":   "surprise",
     }
 
-    print("Loading Aniemore/resd...")
-    ds = load_dataset("Aniemore/resd")
+    TEXT_CANDIDATES  = ("text", "transcription", "raw_text", "sentence", "utterance", "phrase")
+    LABEL_CANDIDATES = ("emotion", "label", "tag", "sentiment")
 
-    cols = ds["train"].column_names
-    text_col  = next((c for c in cols if "text" in c.lower() or "transcript" in c.lower()), cols[0])
-    label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
-    if not label_col:
-        raise ValueError(f"Cannot find label column in Aniemore/resd. Columns: {cols}")
+    def _find_col(cols, candidates):
+        cols_lower = {c.lower(): c for c in cols}
+        for name in candidates:
+            if name in cols_lower:
+                return cols_lower[name]
+        for cand in candidates:
+            for c in cols:
+                if cand in c.lower():
+                    return c
+        return None
 
-    def _convert(ex):
-        raw = str(ex[label_col]).strip().lower()
-        ekman = ANIEMORE_TO_EKMAN.get(raw)
-        label = EKMAN_LABEL2ID[ekman] if ekman else -1
-        return {"text": str(ex[text_col] or ""), "label": label}
+    for dataset_id in ("Aniemore/resd_annotated", "Aniemore/resd"):
+        try:
+            print(f"  Loading {dataset_id}...")
+            ds = load_dataset(dataset_id)
+            split0 = list(ds.keys())[0]
+            cols = ds[split0].column_names
+            text_col  = _find_col(cols, TEXT_CANDIDATES)
+            label_col = _find_col(cols, LABEL_CANDIDATES)
+            if not text_col or not label_col:
+                print(f"    ✗ {dataset_id}: columns not found {cols}")
+                continue
 
-    ds = ds.map(_convert, remove_columns=cols)
-    for split in list(ds.keys()):
-        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"].strip()) > 3)
+            def _convert(ex, tc=text_col, lc=label_col):
+                raw = str(ex[lc]).strip().lower()
+                ekman = ANIEMORE_TO_EKMAN.get(raw)
+                return {"text": str(ex[tc] or "").strip(), "label": EKMAN_LABEL2ID[ekman] if ekman else -1}
 
-    ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (Aniemore/resd, native RU, 7 classes)")
-    return ds
+            ds = ds.map(_convert, remove_columns=cols)
+            for split in list(ds.keys()):
+                ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"]) > 3)
+            ds = _normalize_splits(ds)
+            total = sum(len(ds[s]) for s in ds)
+            print(f"  → {total:,} examples ({dataset_id}, native RU, 7 classes)")
+            return ds
+        except Exception as e:
+            print(f"    ✗ {dataset_id}: {e}")
+
+    raise RuntimeError("Could not load Aniemore/resd from any source.")
 
 
 def load_stage2_clean(
@@ -417,82 +486,138 @@ def load_stage2_clean(
 
 def load_brighter_hf() -> DatasetDict:
     """
-    BRIGHTER (SemEval-2025 Task 11) via HuggingFace mirror.
-    brighter-dataset/BRIGHTER-emotion-categories, Russian subset.
+    BRIGHTER (SemEval-2025 Task 11) — Russian subset.
+    HuggingFace: brighter-dataset/BRIGHTER-emotion-categories, config='rus'.
     6 Ekman emotions, Toloka-annotated native Russian texts.
     """
     print("Loading brighter-dataset/BRIGHTER-emotion-categories (rus)...")
     ds = load_dataset("brighter-dataset/BRIGHTER-emotion-categories", "rus")
 
     cols = ds["train"].column_names
-    text_col = next((c for c in cols if "text" in c.lower()), cols[0])
-    emotion_cols = [c for c in cols if c.lower() in EKMAN_LABEL_NAMES]
+    text_col  = next((c for c in cols if "text" in c.lower()), cols[0])
+    emo_cols  = [c for c in cols if c.lower() in EKMAN_LABEL_NAMES]
 
-    if emotion_cols:
+    if emo_cols:
         def _to_ekman_multi(ex):
-            scores = {c: float(ex.get(c, 0) or 0) for c in emotion_cols}
-            best = max(scores, key=scores.get)
-            label = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
+            scores = {c: float(ex.get(c, 0) or 0) for c in emo_cols}
+            best   = max(scores, key=scores.get)
+            label  = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
             return {"text": ex[text_col], "label": label}
         ds = ds.map(_to_ekman_multi, remove_columns=cols)
     else:
-        label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
-        if not label_col:
-            raise ValueError(f"Cannot find emotion columns in: {cols}")
+        lc = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
+        if not lc:
+            raise ValueError(f"Cannot find emotion columns in BRIGHTER: {cols}")
         def _to_ekman_single(ex):
-            raw = str(ex.get(label_col, "neutral")).strip().lower()
+            raw = str(ex.get(lc, "neutral")).strip().lower()
             return {"text": ex[text_col], "label": EKMAN_LABEL2ID.get(raw, EKMAN_LABEL2ID["neutral"])}
         ds = ds.map(_to_ekman_single, remove_columns=cols)
 
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER-HF, native Ekman)")
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (BRIGHTER, native RU, 6 classes)")
     return ds
 
 
 def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
     """
-    KELONMYOSA/dusha_emotion_audio — ~300k native Russian speech transcripts.
-    4 emotion classes: angry, sad, neutral, positive → Ekman 7.
+    SberDevices/Dusha — ~300k Russian speech transcripts (bi-modal corpus, Interspeech 2023).
+    4 emotion classes: angry→anger, sad→sadness, neutral→neutral, positive→joy.
+    Tries config='crowd' first, then base dataset.
     Audio columns are ignored; only text transcripts are used.
-    max_samples caps examples per split to avoid memory pressure (None = no limit).
+    max_samples caps examples per class to avoid memory pressure (None = no limit).
     """
     DUSHA_TO_EKMAN: Dict[str, str] = {
-        "angry":    "anger",
-        "sad":      "sadness",
-        "neutral":  "neutral",
-        "positive": "joy",
+        "angry":      "anger",
+        "anger":      "anger",
+        "sad":        "sadness",
+        "sadness":    "sadness",
+        "neutral":    "neutral",
+        "positive":   "joy",
+        "enthusiasm": "joy",
+        "joy":        "joy",
     }
 
-    print("Loading KELONMYOSA/dusha_emotion_audio...")
-    ds = load_dataset("KELONMYOSA/dusha_emotion_audio")
+    TEXT_COL_CANDIDATES  = ("raw_text", "transcription", "text", "sentence", "utterance", "phrase")
+    LABEL_COL_CANDIDATES = ("emotion", "label", "tag", "sentiment", "category")
 
-    cols = ds["train"].column_names
-    text_col  = next((c for c in cols if "text" in c.lower() or "transcript" in c.lower()), None)
-    label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower() or "tag" in c.lower()), None)
+    def _find_col(cols, candidates):
+        cols_lower = {c.lower(): c for c in cols}
+        for name in candidates:
+            if name in cols_lower:
+                return cols_lower[name]
+        # partial match fallback
+        for cand in candidates:
+            for c in cols:
+                if cand in c.lower():
+                    return c
+        return None
 
-    if not text_col:
-        raise ValueError(f"Cannot find text column in Dusha. Columns: {cols}")
-    if not label_col:
-        raise ValueError(f"Cannot find label column in Dusha. Columns: {cols}")
+    def _load_and_convert(dataset_id, config=None):
+        kwargs = {"path": dataset_id}
+        if config:
+            kwargs["name"] = config
+        raw = load_dataset(**kwargs)
 
-    audio_cols = [c for c in cols if any(k in c.lower() for k in ("audio", "wav", "path", "file", "array"))]
-    remove_cols = [c for c in cols if c not in (text_col, label_col) or c in audio_cols]
+        split0 = list(raw.keys())[0]
+        cols = raw[split0].column_names
+        text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
+        label_col = _find_col(cols, LABEL_COL_CANDIDATES)
 
-    def _convert(ex):
-        raw = str(ex[label_col]).strip().lower()
-        ekman = DUSHA_TO_EKMAN.get(raw)
-        label = EKMAN_LABEL2ID[ekman] if ekman else -1
-        return {"text": str(ex[text_col] or ""), "label": label}
+        if not text_col:
+            raise ValueError(f"No text column in {dataset_id}. Columns: {cols}")
+        if not label_col:
+            raise ValueError(f"No label column in {dataset_id}. Columns: {cols}")
 
-    ds = ds.map(_convert, remove_columns=remove_cols)
+        keep = {text_col, label_col}
+        remove_cols = [c for c in cols if c not in keep]
+
+        def _convert(ex):
+            raw_label = str(ex[label_col]).strip().lower()
+            ekman = DUSHA_TO_EKMAN.get(raw_label)
+            return {"text": str(ex[text_col] or "").strip(), "label": EKMAN_LABEL2ID[ekman] if ekman else -1}
+
+        return raw.map(_convert, remove_columns=remove_cols)
+
+    # SberDevices/Dusha — try 'crowd' subset first, then base dataset
+    sources = [
+        ("SberDevices/Dusha", "crowd"),
+        ("SberDevices/Dusha", None),
+    ]
+
+    ds = None
+    for dataset_id, config in sources:
+        try:
+            label = f"{dataset_id}" + (f" ({config})" if config else "")
+            print(f"  Loading {label}...")
+            ds = _load_and_convert(dataset_id, config)
+            print(f"    ✓ loaded from {label}")
+            break
+        except Exception as e:
+            print(f"    ✗ {dataset_id}: {e}")
+
+    if ds is None:
+        raise RuntimeError("Could not load Dusha from any source.")
 
     for split in list(ds.keys()):
-        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"].strip()) > 3)
+        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"]) > 3)
         if max_samples and len(ds[split]) > max_samples:
-            ds[split] = ds[split].shuffle(seed=42).select(range(max_samples))
+            # cap per-class to keep class balance within Dusha
+            import pandas as pd
+            from datasets import Dataset
+            df = ds[split].to_pandas()
+            parts = []
+            per_class = max_samples // max(df["label"].nunique(), 1)
+            for lid in df["label"].unique():
+                sub = df[df["label"] == lid]
+                if len(sub) > per_class:
+                    sub = sub.sample(per_class, random_state=42)
+                parts.append(sub)
+            df_capped = pd.concat(parts).sample(frac=1, random_state=42).reset_index(drop=True)
+            ds[split] = Dataset.from_pandas(df_capped)
 
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (Dusha, native RU)")
+    total = sum(len(ds[s]) for s in ds)
+    print(f"  → {total:,} examples (Dusha, native RU, 4 classes)")
     return ds
 
 
