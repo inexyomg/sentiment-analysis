@@ -328,6 +328,93 @@ def load_rusentitweet(cache_dir: Optional[str] = None) -> DatasetDict:
     return _normalize_splits(ds)
 
 
+def load_aniemore_resd() -> DatasetDict:
+    """
+    Aniemore/resd — Russian Emotional Speech Dataset.
+    Native Russian speech transcripts, ~4.5k examples.
+    7 classes: angry, disgust, enthusiasm, fear, happy, neutral, sad → Ekman 7.
+    Покрывает disgust, которого нет в CEDR и Dusha — ценный источник для этапа 2.
+    """
+    ANIEMORE_TO_EKMAN: Dict[str, str] = {
+        "angry":      "anger",
+        "anger":      "anger",
+        "disgust":    "disgust",
+        "enthusiasm": "joy",
+        "fear":       "fear",
+        "happy":      "joy",
+        "happiness":  "joy",
+        "neutral":    "neutral",
+        "sad":        "sadness",
+        "sadness":    "sadness",
+        "surprise":   "surprise",
+    }
+
+    print("Loading Aniemore/resd...")
+    ds = load_dataset("Aniemore/resd")
+
+    cols = ds["train"].column_names
+    text_col  = next((c for c in cols if "text" in c.lower() or "transcript" in c.lower()), cols[0])
+    label_col = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
+    if not label_col:
+        raise ValueError(f"Cannot find label column in Aniemore/resd. Columns: {cols}")
+
+    def _convert(ex):
+        raw = str(ex[label_col]).strip().lower()
+        ekman = ANIEMORE_TO_EKMAN.get(raw)
+        label = EKMAN_LABEL2ID[ekman] if ekman else -1
+        return {"text": str(ex[text_col] or ""), "label": label}
+
+    ds = ds.map(_convert, remove_columns=cols)
+    for split in list(ds.keys()):
+        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"].strip()) > 3)
+
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (Aniemore/resd, native RU, 7 classes)")
+    return ds
+
+
+def load_stage2_clean(
+    use_cedr:         bool = True,
+    use_brighter_hf:  bool = True,
+    use_aniemore:     bool = True,
+    seed:             int  = 42,
+) -> DatasetDict:
+    """
+    Stage-2 corpus: только высококачественные нативные RU датасеты.
+    Совместное покрытие всех 7 классов Ekman:
+      CEDR:       anger, fear, joy, sadness, surprise  (нативный RU, ручная разметка)
+      BRIGHTER:   anger, disgust, fear, joy, sadness, surprise  (Toloka)
+      Aniemore:   anger, disgust, enthusiasm→joy, fear, neutral, sadness  (нативный RU)
+    """
+    sources: Dict[str, DatasetDict] = {}
+
+    if use_cedr:
+        try:
+            sources["cedr"] = load_cedr()
+        except Exception as e:
+            print(f"  WARNING: cedr failed: {e}")
+
+    if use_brighter_hf:
+        try:
+            sources["brighter_hf"] = load_brighter_hf()
+        except Exception as e:
+            print(f"  WARNING: brighter_hf failed: {e}")
+
+    if use_aniemore:
+        try:
+            sources["aniemore"] = load_aniemore_resd()
+        except Exception as e:
+            print(f"  WARNING: aniemore/resd failed: {e}")
+
+    if not sources:
+        raise RuntimeError("No stage-2 datasets loaded — check network access.")
+
+    if len(sources) == 1:
+        return list(sources.values())[0]
+
+    return merge_datasets(sources, test_size=0.15, val_size=0.15, seed=seed)
+
+
 def load_brighter_hf() -> DatasetDict:
     """
     BRIGHTER (SemEval-2025 Task 11) via HuggingFace mirror.
@@ -524,6 +611,7 @@ def load_data(
     brighter_dir:       Optional[str] = None,
     use_brighter_hf:    bool = False,
     use_dusha:          bool = False,
+    use_aniemore:       bool = False,
     seed:               int  = 42,
 ) -> Tuple[DatasetDict, List[str], Dict]:
     """
@@ -535,6 +623,7 @@ def load_data(
       brighter_dir      — путь к распакованному BRIGHTER (если скачан вручную)
       use_brighter_hf   — загрузить BRIGHTER с HuggingFace (brighter-dataset/BRIGHTER-emotion-categories)
       use_dusha         — добавить Dusha (~300k нативных RU транскриптов, KELONMYOSA/dusha_emotion_audio)
+      use_aniemore      — добавить Aniemore/resd (~4.5k нативных RU, 7 классов включая disgust)
 
     Приоритет источников:
       1. csv_path  (пользовательский CSV)
@@ -615,6 +704,17 @@ def load_data(
             )
         except Exception as e:
             print(f"  WARNING: Dusha load failed: {e}")
+
+    # Optional: Aniemore/resd (~4.5k native RU, 7 classes)
+    if use_aniemore:
+        try:
+            aniemore_ds = load_aniemore_resd()
+            ds = merge_datasets(
+                {"emotion": ds, "aniemore": aniemore_ds},
+                test_size=0.15, val_size=0.15, seed=seed,
+            )
+        except Exception as e:
+            print(f"  WARNING: Aniemore/resd load failed: {e}")
 
     # Optional: sentiment datasets (approximate Ekman mapping)
     if include_sentiment:

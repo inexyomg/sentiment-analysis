@@ -340,6 +340,114 @@ def train_model(
     return model, tokenizer, results
 
 
+def train_two_stage(
+    model_name: str,
+    stage1_dataset: DatasetDict,
+    stage2_dataset: DatasetDict,
+    stage1_dir: str,
+    stage2_dir: str,
+    num_labels: int = 7,
+    label_names: Optional[list] = None,
+    # ── Stage 1: pretrain on large noisy corpus ──
+    s1_epochs: int = 3,
+    s1_batch_size: int = 32,
+    s1_lr: float = 2e-5,
+    s1_loss_type: str = "focal",
+    s1_use_class_weights: bool = True,
+    s1_focal_gamma: float = 2.0,
+    s1_gradient_accumulation_steps: int = 1,
+    # ── Stage 2: fine-tune on clean native corpus ──
+    s2_epochs: int = 3,
+    s2_batch_size: int = 16,
+    s2_lr: float = 5e-6,       # ~lr/4: gentle fine-tune, no catastrophic forgetting
+    s2_loss_type: str = "ce",   # clean data → standard CE is fine
+    s2_label_smoothing: float = 0.05,
+    s2_gradient_accumulation_steps: int = 1,
+    # ── Common ──
+    max_length: int = 128,
+    fp16: bool = True,
+    seed: int = 42,
+    gradient_checkpointing: bool = False,
+    use_lora: bool = False,
+    lora_r: int = 16,
+) -> Tuple[object, object, Dict, Dict]:
+    """
+    Two-stage training for domain adaptation.
+
+    Stage 1 — широкий корпус:
+        Pretrain on a large mixed corpus (emotion + sentiment datasets).
+        Uses focal loss + class weights to handle noisy labels and imbalance.
+        Saves checkpoint to stage1_dir.
+
+    Stage 2 — чистый корпус:
+        Fine-tune from stage1_dir on a small high-quality native Russian corpus.
+        Uses lower lr (s2_lr) and standard CE loss.
+        Saves final model to stage2_dir.
+
+    Returns (model, tokenizer, results_stage1, results_stage2).
+    """
+    print("\n" + "=" * 60)
+    print("TWO-STAGE TRAINING")
+    print(f"  Base model : {model_name}")
+    print(f"  Stage 1    : {len(stage1_dataset['train']):,} train examples  →  {stage1_dir}")
+    print(f"  Stage 2    : {len(stage2_dataset['train']):,} train examples  →  {stage2_dir}")
+    print("=" * 60)
+
+    # ── Stage 1 ──────────────────────────────────────────────────
+    print("\n[STAGE 1] Pretrain on large mixed corpus...")
+    model, tokenizer, results1 = train_model(
+        model_name=model_name,
+        dataset=stage1_dataset,
+        output_dir=stage1_dir,
+        num_labels=num_labels,
+        label_names=label_names,
+        num_epochs=s1_epochs,
+        batch_size=s1_batch_size,
+        learning_rate=s1_lr,
+        max_length=max_length,
+        fp16=fp16,
+        seed=seed,
+        loss_type=s1_loss_type,
+        use_class_weights=s1_use_class_weights,
+        focal_gamma=s1_focal_gamma,
+        gradient_accumulation_steps=s1_gradient_accumulation_steps,
+        gradient_checkpointing=gradient_checkpointing,
+        use_lora=use_lora,
+        lora_r=lora_r,
+        early_stopping_patience=2,
+    )
+
+    # ── Stage 2 ──────────────────────────────────────────────────
+    print("\n[STAGE 2] Fine-tune on clean native Russian corpus...")
+    _, _, results2 = train_model(
+        model_name=stage1_dir,          # initialize from stage-1 checkpoint
+        dataset=stage2_dataset,
+        output_dir=stage2_dir,
+        num_labels=num_labels,
+        label_names=label_names,
+        num_epochs=s2_epochs,
+        batch_size=s2_batch_size,
+        learning_rate=s2_lr,
+        max_length=max_length,
+        fp16=fp16,
+        seed=seed,
+        loss_type=s2_loss_type,
+        label_smoothing=s2_label_smoothing,
+        use_class_weights=False,        # clean data → no reweighting needed
+        gradient_accumulation_steps=s2_gradient_accumulation_steps,
+        early_stopping_patience=3,      # more patience on small corpus
+    )
+
+    f1_s1 = results1.get("test_report", {}).get("macro avg", {}).get("f1-score", 0)
+    f1_s2 = results2.get("test_report", {}).get("macro avg", {}).get("f1-score", 0)
+    print(f"\n{'='*60}")
+    print(f"Stage 1 F1-macro: {f1_s1:.4f}")
+    print(f"Stage 2 F1-macro: {f1_s2:.4f}  (Δ = {f1_s2 - f1_s1:+.4f})")
+    print(f"{'='*60}")
+
+    return model, tokenizer, results1, results2
+
+
 def get_predictions(model_path: str, dataset: DatasetDict,
                     max_length: int = 128, batch_size: int = 64,
                     multi_label: bool = False) -> Dict[str, Dict]:
