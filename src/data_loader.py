@@ -862,6 +862,10 @@ def load_dusha(
         candidates: List[str] = []
         if local_dir:
             candidates.append(local_dir)
+        # Hardcoded Kaggle path for sber-dusha-crowd uploaded by inexyy
+        _HARDCODED = "/kaggle/input/datasets/inexyy/sber-dusha-crowd"
+        if os.path.isdir(_HARDCODED):
+            candidates.append(_HARDCODED)
         # Kaggle: datasets can be nested several levels deep, e.g.
         #   /kaggle/input/datasets/<user>/sber-dusha-crowd/sber-dusha-crowd/
         if os.path.isdir("/kaggle/input"):
@@ -914,15 +918,6 @@ def load_dusha(
 
         df = pd.concat(parts, ignore_index=True)
 
-        # Deduplicate by raw text before any processing
-        text_candidate = _find_col(list(df.columns), TEXT_COL_CANDIDATES)
-        if text_candidate:
-            before = len(df)
-            df = df.drop_duplicates(subset=[text_candidate])
-            removed = before - len(df)
-            if removed:
-                print(f"    deduped: {before:,} → {len(df):,} rows (removed {removed:,} duplicates)")
-
         cols = list(df.columns)
         text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
         label_col = _find_col(cols, LABEL_COL_CANDIDATES)
@@ -930,6 +925,28 @@ def load_dusha(
         if not text_col or not label_col:
             print(f"    ✗ local: cannot find text/label columns. cols={cols}")
             return None
+
+        # Crowd files: multiple annotator rows per utterance — aggregate by majority vote.
+        # Regular files: drop exact duplicates.
+        texts_per_row = df[text_col].nunique()
+        is_crowd = len(df) > texts_per_row * 1.5  # >1.5 rows/text → crowd annotations
+        if is_crowd:
+            before = len(df)
+            df = (
+                df[[text_col, label_col]]
+                .dropna()
+                .groupby(text_col, sort=False)[label_col]
+                .agg(lambda x: x.mode().iloc[0])  # majority vote
+                .reset_index()
+                .rename(columns={label_col: label_col})
+            )
+            print(f"    crowd aggregation: {before:,} annotations → {len(df):,} utterances (majority vote)")
+        else:
+            before = len(df)
+            df = df.drop_duplicates(subset=[text_col])
+            removed = before - len(df)
+            if removed:
+                print(f"    deduped: {before:,} → {len(df):,} rows (removed {removed:,} duplicates)")
 
         print(f"    columns → text='{text_col}', label='{label_col}'")
 
