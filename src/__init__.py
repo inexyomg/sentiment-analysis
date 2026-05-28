@@ -13,6 +13,7 @@ from .data_loader import (
     load_stage2_clean,
     load_rureviews,
     load_rusentitweet,
+    load_llm_annotated,
     merge_datasets,
     EKMAN_LABEL_NAMES,
     EKMAN_ID2LABEL,
@@ -33,3 +34,4 @@ from .ensemble import (
 )
 from .inference import EmotionClassifier
 from .augmentation import TextAugmenter, augment_rare_classes
+from .llm_annotator import LLMAnnotator, annotate_dataset
