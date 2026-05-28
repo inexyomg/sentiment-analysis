@@ -81,24 +81,38 @@ def _multilabel_to_ekman(label_ids, idx2ekman: Dict[int, str]) -> int:
 def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
     """
     seara/ru_go_emotions — Russian translation of Google GoEmotions.
+    Columns: ru_text (Russian), text (English original), labels (list[int] 0-27), id.
     config='simplified' (~54k) or 'raw' (~211k, noisier but more fear/disgust examples).
     28 multi-label emotions → Ekman 7 single-label.
     """
     print(f"Loading seara/ru_go_emotions ({config})...")
     ds = load_dataset("seara/ru_go_emotions", config)
 
-    text_col  = "text"
-    label_col = next(c for c in ds["train"].column_names if "label" in c.lower())
+    cols = ds["train"].column_names
+    # Russian text is in 'ru_text'; 'text' is the English original — we must use ru_text
+    text_col  = "ru_text" if "ru_text" in cols else next(
+        (c for c in cols if "ru" in c.lower() and "text" in c.lower()), "text"
+    )
+    label_col = next((c for c in cols if "label" in c.lower()), None)
+    if not label_col:
+        raise ValueError(f"Cannot find labels column in seara/ru_go_emotions. Columns: {cols}")
 
     _idx2ekman = {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()}
 
     def _convert(ex):
-        ids = [int(x) for x in (ex.get(label_col) or [])]
-        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, _idx2ekman)}
+        raw = ex.get(label_col)
+        # labels is a list of ints [0-27]; handle edge case of single int too
+        if isinstance(raw, (list, tuple)):
+            ids = [int(x) for x in raw]
+        elif raw is not None:
+            ids = [int(raw)]
+        else:
+            ids = []
+        return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
 
-    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru_go_emotions/{config})")
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru_go_emotions/{config}, RU text)")
     return ds
 
 
@@ -144,20 +158,53 @@ def load_ru_izard_emotions() -> DatasetDict:
     """
     Djacon/ru-izard-emotions — ~30k Russian texts (DeepL translation from GoEmotions).
     10 Izard emotion classes → Ekman 7.
+
+    Dataset columns: text + either:
+      a) 'labels' — list of present Izard indices [0-9]  (multi-label)
+      b) 'label'  — single Izard index int
+      c) separate binary columns: Neutral, Joy, Sadness, Anger, Enthusiasm,
+                                   Surprise, Disgust, Fear, Guilt, Shame
     """
+    # Ordered by Izard index — must match IZARD_IDX2EKMAN keys
+    IZARD_COL_NAMES = ("neutral", "joy", "sadness", "anger", "enthusiasm",
+                       "surprise", "disgust", "fear", "guilt", "shame")
+
     print("Loading Djacon/ru-izard-emotions...")
     ds = load_dataset("Djacon/ru-izard-emotions")
 
-    label_col = next((c for c in ds["train"].column_names if "label" in c.lower()), None)
-    text_col  = next((c for c in ds["train"].column_names if "text" in c.lower()), ds["train"].column_names[0])
+    cols      = ds["train"].column_names
+    cols_low  = {c.lower(): c for c in cols}
+    text_col  = next((c for c in cols if "text" in c.lower()), cols[0])
 
-    def _convert(ex):
-        ids = [int(x) for x in (ex.get(label_col) or [])] if label_col else []
-        return {"text": ex[text_col], "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    # Detect label format
+    label_col    = cols_low.get("labels") or cols_low.get("label")
+    emotion_cols = [cols_low[n] for n in IZARD_COL_NAMES if n in cols_low]
 
-    ds = ds.map(_convert, remove_columns=ds["train"].column_names)
+    if label_col:
+        def _convert(ex):
+            raw = ex.get(label_col)
+            if isinstance(raw, (list, tuple)):
+                ids = [int(x) for x in raw]
+            elif raw is not None:
+                ids = [int(raw)]   # single int label
+            else:
+                ids = []
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    elif emotion_cols:
+        # Separate binary columns — collect indices of non-zero ones
+        def _convert(ex):
+            ids = [i for i, col in enumerate(emotion_cols) if ex.get(col, 0)]
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, IZARD_IDX2EKMAN)}
+    else:
+        raise ValueError(
+            f"Cannot find label column in Djacon/ru-izard-emotions.\n"
+            f"Columns: {cols}\n"
+            f"Expected: 'label', 'labels', or individual emotion columns"
+        )
+
+    ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
-    print(f"  → {sum(len(ds[s]) for s in ds):,} examples")
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru-izard-emotions)")
     return ds
 
 
@@ -475,7 +522,7 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
     """
     SberDevices/Dusha — ~300k Russian speech transcripts (bi-modal corpus, Interspeech 2023).
     4 emotion classes: angry→anger, sad→sadness, neutral→neutral, positive→joy.
-    Falls back to KELONMYOSA/dusha_emotion_audio if the primary source is unavailable.
+    Tries config='crowd' first, then base dataset.
     Audio columns are ignored; only text transcripts are used.
     max_samples caps examples per class to avoid memory pressure (None = no limit).
     """
@@ -531,11 +578,10 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
 
         return raw.map(_convert, remove_columns=remove_cols)
 
-    # Try primary source first, then fallback
+    # SberDevices/Dusha — try 'crowd' subset first, then base dataset
     sources = [
         ("SberDevices/Dusha", "crowd"),
         ("SberDevices/Dusha", None),
-        ("KELONMYOSA/dusha_emotion_audio", None),
     ]
 
     ds = None
