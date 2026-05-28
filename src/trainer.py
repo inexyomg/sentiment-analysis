@@ -235,6 +235,11 @@ def train_model(
         class_weights = compute_class_weights(train_labels, num_labels)
         print(f"Class weights: {dict(zip(lnames, class_weights.tolist()))}")
 
+    # warmup_ratio → warmup_steps (warmup_ratio deprecated in transformers ≥ 4.46)
+    effective_batch = batch_size * gradient_accumulation_steps
+    steps_per_epoch = max(1, len(tokenized["train"]) // effective_batch)
+    warmup_steps = int(steps_per_epoch * num_epochs * warmup_ratio)
+
     args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
@@ -242,7 +247,7 @@ def train_model(
         per_device_eval_batch_size=batch_size * 2,
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
-        warmup_ratio=warmup_ratio,
+        warmup_steps=warmup_steps,
         weight_decay=weight_decay,
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -256,12 +261,17 @@ def train_model(
         save_total_limit=2,
     )
 
+    # tokenizer= removed from Trainer in transformers ≥ 4.46; use processing_class=
+    import transformers as _tf
+    _tf_ver = tuple(int(x) for x in _tf.__version__.split(".")[:2])
+    _tok_kwarg = "processing_class" if _tf_ver >= (4, 46) else "tokenizer"
+
     trainer = WeightedTrainer(
         model=model,
         args=args,
         train_dataset=tokenized["train"],
         eval_dataset=tokenized[val_split],
-        tokenizer=tokenizer,
+        **{_tok_kwarg: tokenizer},
         data_collator=collator,
         compute_metrics=_metrics_multi if multi_label else _metrics_single,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)],
@@ -456,8 +466,11 @@ def get_predictions(model_path: str, dataset: DatasetDict,
     model = AutoModelForSequenceClassification.from_pretrained(model_path)
     tokenized = tokenize_dataset(dataset, tokenizer, max_length=max_length)
 
+    import transformers as _tf
+    _tf_ver = tuple(int(x) for x in _tf.__version__.split(".")[:2])
+    _tok_kwarg = "processing_class" if _tf_ver >= (4, 46) else "tokenizer"
     args = TrainingArguments(output_dir=model_path, per_device_eval_batch_size=batch_size, report_to="none")
-    trainer = Trainer(model=model, args=args, tokenizer=tokenizer)
+    trainer = Trainer(model=model, args=args, **{_tok_kwarg: tokenizer})
 
     out = {}
     for split in ["validation", "test"]:
