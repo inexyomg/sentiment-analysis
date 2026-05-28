@@ -331,9 +331,39 @@ def _sentiment_df_to_ekman(df: pd.DataFrame,
 def load_rureviews(cache_dir: Optional[str] = None) -> DatasetDict:
     """
     sismetanin/rureviews — 90k balanced Russian e-commerce reviews.
-    3-class sentiment (pos/neu/neg) → approximate Ekman mapping.
-    Скачивается напрямую с GitHub (~11 MB CSV).
+
+    Priority:
+      1. Kaggle manual annotation — /kaggle/input/datasets/inexyy/ru-reviews-tweets/rureviews/
+         Files: ru_reviews_ekman7_{train,val,test}.csv  (column: ekman_emotion)
+      2. Fallback — download from GitHub + coarse pos/neg/neu→Ekman mapping.
     """
+    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/ru-reviews-tweets/rureviews"
+    _SPLIT_FILES = {
+        "train":      "ru_reviews_ekman7_train.csv",
+        "validation": "ru_reviews_ekman7_val.csv",
+        "test":       "ru_reviews_ekman7_test.csv",
+    }
+
+    if os.path.isdir(_KAGGLE_DIR):
+        splits: dict = {}
+        total = 0
+        for split_name, fname in _SPLIT_FILES.items():
+            fpath = os.path.join(_KAGGLE_DIR, fname)
+            df = pd.read_csv(fpath)
+            text_col = next(
+                (c for c in df.columns if "review" in c.lower() or "text" in c.lower()),
+                df.columns[0],
+            )
+            df["text"]  = df[text_col].astype(str).str.strip()
+            df["label"] = df["ekman_emotion"].astype(str).str.lower().map(EKMAN_LABEL2ID)
+            df = df.dropna(subset=["label"])[["text", "label"]].copy()
+            df["label"] = df["label"].astype(int)
+            splits[split_name] = Dataset.from_pandas(df.reset_index(drop=True))
+            total += len(df)
+        print(f"RuReviews (Kaggle): {total:,} examples (ekman_emotion, manual annotation)")
+        return _normalize_splits(DatasetDict(splits))
+
+    # ── Fallback: GitHub download + coarse sentiment→Ekman mapping ────────────
     import urllib.request
 
     URL = ("https://raw.githubusercontent.com/sismetanin/rureviews/master/"
@@ -349,7 +379,6 @@ def load_rureviews(cache_dir: Optional[str] = None) -> DatasetDict:
 
     df = pd.read_csv(save_path, sep="\t" if "\t" in open(save_path).read(200) else ",")
 
-    # Auto-detect columns
     text_col  = next((c for c in df.columns if "review" in c.lower() or "text" in c.lower()), df.columns[0])
     label_col = next((c for c in df.columns if "sentiment" in c.lower() or "label" in c.lower() or "class" in c.lower()), df.columns[-1])
 
@@ -372,9 +401,44 @@ def load_rureviews(cache_dir: Optional[str] = None) -> DatasetDict:
 def load_rusentitweet(cache_dir: Optional[str] = None) -> DatasetDict:
     """
     sismetanin/rusentitweet — 13.4k manually annotated Russian tweets.
-    5-class (pos/neu/neg/speech/skip) → 3 usable classes → Ekman.
-    Скачивается с GitHub.
+
+    Priority:
+      1. Kaggle manual annotation — /kaggle/input/datasets/inexyy/ru-reviews-tweets/rusentitweet/
+         Files: rusentitweet_ekman7_{train,val,test}.csv  (column: ekman_emotion)
+         Rule: if original_label == 'neutral' → force ekman_emotion = 'neutral'.
+      2. Fallback — download from GitHub + coarse pos/neg/neu→Ekman mapping.
     """
+    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/ru-reviews-tweets/rusentitweet"
+    _SPLIT_FILES = {
+        "train":      "rusentitweet_ekman7_train.csv",
+        "validation": "rusentitweet_ekman7_val.csv",
+        "test":       "rusentitweet_ekman7_test.csv",
+    }
+
+    if os.path.isdir(_KAGGLE_DIR):
+        splits: dict = {}
+        total = 0
+        for split_name, fname in _SPLIT_FILES.items():
+            fpath = os.path.join(_KAGGLE_DIR, fname)
+            df = pd.read_csv(fpath)
+            text_col = next(
+                (c for c in df.columns if "text" in c.lower() or "tweet" in c.lower()),
+                df.columns[0],
+            )
+            df["text"] = df[text_col].astype(str).str.strip()
+            # Rule: original_label == neutral → override ekman_emotion
+            if "original_label" in df.columns:
+                mask = df["original_label"].astype(str).str.lower() == "neutral"
+                df.loc[mask, "ekman_emotion"] = "neutral"
+            df["label"] = df["ekman_emotion"].astype(str).str.lower().map(EKMAN_LABEL2ID)
+            df = df.dropna(subset=["label"])[["text", "label"]].copy()
+            df["label"] = df["label"].astype(int)
+            splits[split_name] = Dataset.from_pandas(df.reset_index(drop=True))
+            total += len(df)
+        print(f"RuSentiTweet (Kaggle): {total:,} examples (ekman_emotion, manual annotation)")
+        return _normalize_splits(DatasetDict(splits))
+
+    # ── Fallback: GitHub download + coarse sentiment→Ekman mapping ────────────
     import urllib.request
 
     URL = ("https://raw.githubusercontent.com/sismetanin/rusentitweet/master/"
@@ -849,6 +913,16 @@ def load_dusha(
             return None
 
         df = pd.concat(parts, ignore_index=True)
+
+        # Deduplicate by raw text before any processing
+        text_candidate = _find_col(list(df.columns), TEXT_COL_CANDIDATES)
+        if text_candidate:
+            before = len(df)
+            df = df.drop_duplicates(subset=[text_candidate])
+            removed = before - len(df)
+            if removed:
+                print(f"    deduped: {before:,} → {len(df):,} rows (removed {removed:,} duplicates)")
+
         cols = list(df.columns)
         text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
         label_col = _find_col(cols, LABEL_COL_CANDIDATES)
