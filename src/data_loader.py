@@ -81,35 +81,55 @@ def _multilabel_to_ekman(label_ids, idx2ekman: Dict[int, str]) -> int:
 def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
     """
     seara/ru_go_emotions — Russian translation of Google GoEmotions.
-    Columns: ru_text (Russian), text (English original), labels (list[int] 0-27), id.
-    config='simplified' (~54k) or 'raw' (~211k, noisier but more fear/disgust examples).
-    28 multi-label emotions → Ekman 7 single-label.
+    config='simplified' (~54k): columns include 'labels' (list[int 0-27]), train/val/test splits.
+    config='raw' (~211k): one binary column per emotion name, only 'train' split.
+    Russian text is always in 'ru_text'; 'text' is the English original.
+    28 GoEmotions labels → Ekman 7 single-label.
     """
     print(f"Loading seara/ru_go_emotions ({config})...")
     ds = load_dataset("seara/ru_go_emotions", config)
 
-    cols = ds["train"].column_names
-    # Russian text is in 'ru_text'; 'text' is the English original — we must use ru_text
-    text_col  = "ru_text" if "ru_text" in cols else next(
+    cols     = ds["train"].column_names
+    cols_set = set(c.lower() for c in cols)
+
+    # Russian text is in 'ru_text'; 'text' is the English original
+    text_col = "ru_text" if "ru_text" in cols else next(
         (c for c in cols if "ru" in c.lower() and "text" in c.lower()), "text"
     )
+
+    _idx2ekman    = {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()}
+    _name2idx     = {v: k for k, v in GOEMOTION_IDX2NAME.items()}
+
+    # Detect label format
     label_col = next((c for c in cols if "label" in c.lower()), None)
-    if not label_col:
-        raise ValueError(f"Cannot find labels column in seara/ru_go_emotions. Columns: {cols}")
 
-    _idx2ekman = {i: EMOTION_TO_EKMAN.get(n, "neutral") for i, n in GOEMOTION_IDX2NAME.items()}
+    # raw config: has one binary column per GoEmotion name (no 'labels' list column)
+    emotion_bin_cols = [c for c in cols if c.lower() in _name2idx]
 
-    def _convert(ex):
-        raw = ex.get(label_col)
-        # labels is a list of ints [0-27]; handle edge case of single int too
-        if isinstance(raw, (list, tuple)):
-            ids = [int(x) for x in raw]
-        elif raw is not None:
-            ids = [int(raw)]
-        else:
-            ids = []
-        return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
+    if label_col:
+        # simplified config: 'labels' is a list of present GoEmotion indices
+        def _convert(ex):
+            raw = ex.get(label_col)
+            if isinstance(raw, (list, tuple)):
+                ids = [int(x) for x in raw]
+            elif raw is not None:
+                ids = [int(raw)]
+            else:
+                ids = []
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
+    elif emotion_bin_cols:
+        # raw config: collect indices of columns that are 1
+        def _convert(ex):
+            ids = [_name2idx[c] for c in emotion_bin_cols if ex.get(c, 0)]
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
+    else:
+        raise ValueError(
+            f"Cannot find labels in seara/ru_go_emotions ({config}).\n"
+            f"Columns: {cols}\n"
+            f"Expected: 'labels' list column OR individual emotion binary columns."
+        )
 
+    print(f"  columns: text='{text_col}', label format={'list' if label_col else 'binary per-emotion'}")
     ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
     print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru_go_emotions/{config}, RU text)")
@@ -208,13 +228,26 @@ def load_ru_izard_emotions() -> DatasetDict:
     return ds
 
 
-def _normalize_splits(ds: DatasetDict) -> DatasetDict:
+def _normalize_splits(ds: DatasetDict, seed: int = 42) -> DatasetDict:
     """Standardize split names and ensure train/validation/test exist."""
     for old, new in [("dev", "validation"), ("development", "validation"), ("valid", "validation")]:
         if old in ds and new not in ds:
             ds[new] = ds.pop(old)
     if "validation" not in ds and "test" in ds:
         ds["validation"] = ds["test"]
+
+    # If only "train" exists (e.g. seara/ru_go_emotions raw config), create val/test
+    if set(ds.keys()) == {"train"}:
+        df = ds["train"].to_pandas()
+        stratify_col = df["label"] if "label" in df.columns else None
+        train_df, tmp_df = train_test_split(df, test_size=0.20, random_state=seed, stratify=stratify_col)
+        stratify_tmp = tmp_df["label"] if "label" in tmp_df.columns else None
+        val_df, test_df  = train_test_split(tmp_df, test_size=0.50, random_state=seed, stratify=stratify_tmp)
+        ds = DatasetDict({
+            "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+            "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+            "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+        })
     return ds
 
 
@@ -532,12 +565,16 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
         "sad":        "sadness",
         "sadness":    "sadness",
         "neutral":    "neutral",
+        # Dusha crowd labels use "happy" (not "positive")
+        "happy":      "joy",
+        "happiness":  "joy",
         "positive":   "joy",
         "enthusiasm": "joy",
         "joy":        "joy",
     }
 
-    TEXT_COL_CANDIDATES  = ("raw_text", "transcription", "text", "sentence", "utterance", "phrase")
+    TEXT_COL_CANDIDATES  = ("raw_text", "transcription", "text", "sentence", "utterance", "phrase", "speaker_text")
+    # Dusha: use aggregated 'emotion' column, not individual annotator columns
     LABEL_COL_CANDIDATES = ("emotion", "label", "tag", "sentiment", "category")
 
     def _find_col(cols, candidates):
@@ -552,14 +589,20 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
                     return c
         return None
 
-    def _load_and_convert(dataset_id, config=None):
-        kwargs = {"path": dataset_id}
+    def _load_streaming(dataset_id, config, per_class_limit):
+        """
+        Load via streaming to avoid downloading audio files.
+        Reads only text + label fields from each shard.
+        """
+        kwargs: dict = {"streaming": True}
         if config:
             kwargs["name"] = config
-        raw = load_dataset(**kwargs)
 
-        split0 = list(raw.keys())[0]
-        cols = raw[split0].column_names
+        raw_iter = load_dataset(dataset_id, **kwargs)
+
+        split0   = list(raw_iter.keys())[0]
+        first_ex = next(iter(raw_iter[split0].take(1)))
+        cols     = list(first_ex.keys())
         text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
         label_col = _find_col(cols, LABEL_COL_CANDIDATES)
 
@@ -567,6 +610,46 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
             raise ValueError(f"No text column in {dataset_id}. Columns: {cols}")
         if not label_col:
             raise ValueError(f"No label column in {dataset_id}. Columns: {cols}")
+        print(f"    columns → text='{text_col}', label='{label_col}'")
+
+        result: dict = {}
+        for split_name, split_iter in raw_iter.items():
+            records: list = []
+            per_class: dict = {}
+            for ex in split_iter:
+                raw_label = str(ex.get(label_col, "")).strip().lower()
+                ekman = DUSHA_TO_EKMAN.get(raw_label)
+                text  = str(ex.get(text_col) or "").strip()
+                if ekman and len(text) > 3:
+                    lid = EKMAN_LABEL2ID[ekman]
+                    if per_class_limit is None or per_class.get(lid, 0) < per_class_limit:
+                        records.append({"text": text, "label": lid})
+                        per_class[lid] = per_class.get(lid, 0) + 1
+                # Early exit when all 4 classes are saturated
+                if per_class_limit and len(per_class) >= 4 and all(
+                    per_class.get(lid, 0) >= per_class_limit
+                    for lid in per_class
+                ):
+                    break
+            result[split_name] = Dataset.from_list(records)
+        return DatasetDict(result)
+
+    def _load_normal(dataset_id, config):
+        kwargs: dict = {}
+        if config:
+            kwargs["name"] = config
+        raw = load_dataset(dataset_id, **kwargs)
+
+        split0 = list(raw.keys())[0]
+        cols   = raw[split0].column_names
+        text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
+        label_col = _find_col(cols, LABEL_COL_CANDIDATES)
+
+        if not text_col:
+            raise ValueError(f"No text column in {dataset_id}. Columns: {cols}")
+        if not label_col:
+            raise ValueError(f"No label column in {dataset_id}. Columns: {cols}")
+        print(f"    columns → text='{text_col}', label='{label_col}'")
 
         keep = {text_col, label_col}
         remove_cols = [c for c in cols if c not in keep]
@@ -579,6 +662,9 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
         return raw.map(_convert, remove_columns=remove_cols)
 
     # SberDevices/Dusha — try 'crowd' subset first, then base dataset
+    # Use per-class limit for streaming (max_samples / 4 classes)
+    per_class_limit = (max_samples // 4) if max_samples else None
+
     sources = [
         ("SberDevices/Dusha", "crowd"),
         ("SberDevices/Dusha", None),
@@ -586,31 +672,39 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
 
     ds = None
     for dataset_id, config in sources:
-        try:
-            label = f"{dataset_id}" + (f" ({config})" if config else "")
-            print(f"  Loading {label}...")
-            ds = _load_and_convert(dataset_id, config)
-            print(f"    ✓ loaded from {label}")
+        tag = f"{dataset_id}" + (f" ({config})" if config else "")
+        # Try streaming first (avoids audio download on bi-modal datasets)
+        for loader_name, loader_fn, loader_arg in [
+            ("streaming", _load_streaming, per_class_limit),
+            ("normal",    _load_normal,    None),
+        ]:
+            try:
+                print(f"  Loading {tag} [{loader_name}]...")
+                ds = loader_fn(dataset_id, config, loader_arg) if loader_name == "streaming" \
+                     else loader_fn(dataset_id, config)
+                print(f"    ✓ loaded from {tag} [{loader_name}]")
+                break
+            except Exception as e:
+                print(f"    ✗ {tag} [{loader_name}]: {e}")
+        if ds is not None:
             break
-        except Exception as e:
-            print(f"    ✗ {dataset_id}: {e}")
 
     if ds is None:
         raise RuntimeError("Could not load Dusha from any source.")
 
     for split in list(ds.keys()):
-        ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"]) > 3)
+        # Filter out bad labels (only needed after normal load; streaming already filtered)
+        if any(ex["label"] < 0 for ex in ds[split].select(range(min(10, len(ds[split]))))):
+            ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"]) > 3)
+        # Per-class cap for normal-loaded splits
         if max_samples and len(ds[split]) > max_samples:
-            # cap per-class to keep class balance within Dusha
-            import pandas as pd
-            from datasets import Dataset
             df = ds[split].to_pandas()
             parts = []
-            per_class = max_samples // max(df["label"].nunique(), 1)
+            per_class_n = max_samples // max(df["label"].nunique(), 1)
             for lid in df["label"].unique():
                 sub = df[df["label"] == lid]
-                if len(sub) > per_class:
-                    sub = sub.sample(per_class, random_state=42)
+                if len(sub) > per_class_n:
+                    sub = sub.sample(per_class_n, random_state=42)
                 parts.append(sub)
             df_capped = pd.concat(parts).sample(frac=1, random_state=42).reset_index(drop=True)
             ds[split] = Dataset.from_pandas(df_capped)
