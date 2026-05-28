@@ -475,8 +475,190 @@ def load_aniemore_resd() -> DatasetDict:
     raise RuntimeError("Could not load Aniemore/resd from any source.")
 
 
+def load_cedr_m7() -> DatasetDict:
+    """
+    Aniemore/cedr-m7 — CEDR corpus extended to 7 Ekman classes.
+    Adds disgust and neutral on top of the base 5-class CEDR.
+    Native Russian text from LiveJournal, Lenta.ru, Twitter.
+    Columns: text (str), labels (str emotion name), source (str).
+    """
+    CEDR_M7_TO_EKMAN: Dict[str, str] = {
+        "neutral":    "neutral",
+        "happiness":  "joy",
+        "sadness":    "sadness",
+        "enthusiasm": "joy",    # energetic positive state
+        "fear":       "fear",
+        "anger":      "anger",
+        "disgust":    "disgust",
+    }
+
+    print("Loading Aniemore/cedr-m7...")
+    ds = load_dataset("Aniemore/cedr-m7")
+
+    split0 = list(ds.keys())[0]
+    cols = ds[split0].column_names
+    cols_lower = {c.lower(): c for c in cols}
+
+    text_col  = cols_lower.get("text") or next((c for c in cols if "text" in c.lower()), cols[0])
+    label_col = cols_lower.get("labels") or cols_lower.get("label") or next(
+        (c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None
+    )
+    if not label_col:
+        raise ValueError(f"Cannot find label column in Aniemore/cedr-m7. Columns: {cols}")
+
+    def _convert(ex):
+        raw   = str(ex.get(label_col, "neutral")).strip().lower()
+        ekman = CEDR_M7_TO_EKMAN.get(raw)
+        label = EKMAN_LABEL2ID[ekman] if ekman else EKMAN_LABEL2ID["neutral"]
+        return {"text": str(ex[text_col] or "").strip(), "label": label}
+
+    ds = ds.map(_convert, remove_columns=cols)
+    ds = _normalize_splits(ds)
+    print(f"  → {sum(len(ds[s]) for s in ds):,} examples (cedr-m7, 7 classes, native RU)")
+    return ds
+
+
+def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
+    """
+    XED — Multilingual Emotion Dataset, Russian subset (~2,400 lines).
+    Source: Helsinki-NLP/XED, movie subtitles (OPUS).
+    8 Plutchik emotions (multi-label integers 1-8) → Ekman 7 single-label.
+
+    Plutchik → Ekman mapping:
+      1 anger       → anger
+      2 anticipation→ surprise
+      3 disgust     → disgust
+      4 fear        → fear
+      5 joy         → joy
+      6 sadness     → sadness
+      7 surprise    → surprise
+      8 trust       → joy
+    """
+    import urllib.request
+
+    # Index 1-8 (alphabetical Plutchik) → Ekman label ID
+    _XED2EKMAN: Dict[int, int] = {
+        1: EKMAN_LABEL2ID["anger"],
+        2: EKMAN_LABEL2ID["surprise"],   # anticipation
+        3: EKMAN_LABEL2ID["disgust"],
+        4: EKMAN_LABEL2ID["fear"],
+        5: EKMAN_LABEL2ID["joy"],
+        6: EKMAN_LABEL2ID["sadness"],
+        7: EKMAN_LABEL2ID["surprise"],
+        8: EKMAN_LABEL2ID["joy"],        # trust
+    }
+
+    cache_root = cache_dir or os.path.expanduser("~/.cache/xed_russian")
+    os.makedirs(cache_root, exist_ok=True)
+
+    # Try several candidate locations in the Helsinki-NLP/XED GitHub repo
+    BASE = "https://raw.githubusercontent.com/Helsinki-NLP/XED/master"
+    url_candidates = [
+        (f"{BASE}/xed_splits/ru-EXT/train.tsv", f"{BASE}/xed_splits/ru-EXT/test.tsv"),
+        (f"{BASE}/xed_splits/ru/train.tsv",     f"{BASE}/xed_splits/ru/test.tsv"),
+        (f"{BASE}/ru-finegrained.tsv",           None),
+        (f"{BASE}/data/ru.tsv",                  None),
+    ]
+
+    def _parse_tsv(path: str) -> pd.DataFrame:
+        rows = []
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                text  = parts[0].strip()
+                # labels: comma-separated integers, or "0" for neutral
+                raw_labels = [s.strip() for s in parts[-1].split(",") if s.strip()]
+                ids = []
+                for s in raw_labels:
+                    try:
+                        n = int(s)
+                        if 1 <= n <= 8:
+                            ids.append(n)
+                    except ValueError:
+                        pass
+                if text:
+                    rows.append({"text": text, "emotion_ids": ids})
+        return pd.DataFrame(rows)
+
+    def _download(url: str, save_path: str) -> bool:
+        try:
+            urllib.request.urlretrieve(url, save_path)
+            return True
+        except Exception:
+            return False
+
+    dfs: List[pd.DataFrame] = []
+
+    for train_url, test_url in url_candidates:
+        train_path = os.path.join(cache_root, "xed_ru_train.tsv")
+        test_path  = os.path.join(cache_root, "xed_ru_test.tsv")
+        single_path = os.path.join(cache_root, "xed_ru_all.tsv")
+
+        ok = False
+        if test_url:
+            # Two-file layout (train + test)
+            if (os.path.exists(train_path) or _download(train_url, train_path)) and \
+               (os.path.exists(test_path)  or _download(test_url,  test_path)):
+                try:
+                    dfs = [_parse_tsv(train_path), _parse_tsv(test_path)]
+                    ok = True
+                    print(f"  XED: loaded from {train_url}")
+                except Exception as e:
+                    print(f"  XED parse error: {e}")
+        else:
+            # Single-file layout
+            if os.path.exists(single_path) or _download(train_url, single_path):
+                try:
+                    dfs = [_parse_tsv(single_path)]
+                    ok = True
+                    print(f"  XED: loaded from {train_url}")
+                except Exception as e:
+                    print(f"  XED parse error: {e}")
+
+        if ok:
+            break
+
+    if not dfs:
+        raise RuntimeError(
+            "Could not download XED Russian data from Helsinki-NLP/XED GitHub. "
+            "Check network access."
+        )
+
+    full_df = pd.concat(dfs, ignore_index=True)
+
+    def _to_ekman(ids):
+        if not ids:
+            return EKMAN_LABEL2ID["neutral"]
+        votes: Dict[int, int] = {}
+        for i in ids:
+            lbl = _XED2EKMAN.get(i, EKMAN_LABEL2ID["neutral"])
+            votes[lbl] = votes.get(lbl, 0) + 1
+        return max(votes, key=lambda k: (votes[k], k != EKMAN_LABEL2ID["neutral"]))
+
+    full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
+    full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
+    full_df["label"] = full_df["label"].astype(int)
+
+    print(f"  → {len(full_df):,} examples (XED Russian, Plutchik→Ekman, movie subtitles)")
+
+    train_df, tmp = train_test_split(full_df, test_size=0.20, random_state=42, stratify=full_df["label"])
+    val_df, test_df = train_test_split(tmp,   test_size=0.50, random_state=42, stratify=tmp["label"])
+
+    return _normalize_splits(DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    }))
+
+
 def load_stage2_clean(
     use_cedr:         bool = True,
+    use_cedr_m7:      bool = True,
     use_brighter_hf:  bool = True,
     use_aniemore:     bool = True,
     seed:             int  = 42,
@@ -484,13 +666,24 @@ def load_stage2_clean(
     """
     Stage-2 corpus: только высококачественные нативные RU датасеты.
     Совместное покрытие всех 7 классов Ekman:
-      CEDR:       anger, fear, joy, sadness, surprise  (нативный RU, ручная разметка)
-      BRIGHTER:   anger, disgust, fear, joy, sadness, surprise  (Toloka)
-      Aniemore:   anger, disgust, enthusiasm→joy, fear, neutral, sadness  (нативный RU)
+      CEDR-M7:   все 7 классов Ekman incl. disgust + neutral  (расширенная версия CEDR)
+      BRIGHTER:  anger, disgust, fear, joy, sadness, surprise  (Toloka, нативный RU)
+      Aniemore:  anger, disgust, enthusiasm→joy, fear, neutral, sadness
     """
     sources: Dict[str, DatasetDict] = {}
 
-    if use_cedr:
+    if use_cedr_m7:
+        # cedr-m7 preferred over base cedr — covers disgust + neutral
+        try:
+            sources["cedr_m7"] = load_cedr_m7()
+        except Exception as e:
+            print(f"  WARNING: cedr-m7 failed: {e}")
+            if use_cedr:
+                try:
+                    sources["cedr"] = load_cedr()
+                except Exception as e2:
+                    print(f"  WARNING: cedr fallback failed: {e2}")
+    elif use_cedr:
         try:
             sources["cedr"] = load_cedr()
         except Exception as e:
