@@ -1,4 +1,5 @@
 import os
+import json
 import pandas as pd
 import numpy as np
 from datasets import load_dataset, Dataset, DatasetDict, concatenate_datasets
@@ -1078,6 +1079,75 @@ def load_brighter(data_dir: str) -> DatasetDict:
         "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
         "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
     }))
+
+
+# ── LLM-annotated data loader ──────────────────────────────────────
+
+def load_llm_annotated(
+    cache_paths: List[str],
+    test_size:   float = 0.15,
+    val_size:    float = 0.15,
+    seed:        int   = 42,
+) -> DatasetDict:
+    """
+    Load LLM-annotated texts from JSONL cache files produced by LLMAnnotator.
+
+    Each JSONL line: {"text": "...", "label": "joy"}  (string label)
+    Multiple files are concatenated (e.g., rureviews + rusentitweet caches).
+
+    Parameters
+    ----------
+    cache_paths : list of paths to .jsonl annotation cache files
+    """
+    records: List[dict] = []
+    for path in cache_paths:
+        path = str(path)
+        if not os.path.exists(path):
+            print(f"  WARNING: annotation cache not found: {path}")
+            continue
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    text  = str(rec.get("text", "")).strip()
+                    label_str = str(rec.get("label", "neutral")).strip().lower()
+                    label = EKMAN_LABEL2ID.get(label_str, -1)
+                    if label >= 0 and len(text) > 3:
+                        records.append({"text": text, "label": label})
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        print(f"  Loaded {len(records):,} entries from {path}")
+
+    if not records:
+        raise RuntimeError(f"No valid annotated examples found in: {cache_paths}")
+
+    import json as _json_mod  # already imported at module level but make scope clear
+    df = pd.DataFrame(records)
+    df["label"] = df["label"].astype(int)
+    df = df.drop_duplicates(subset=["text"]).reset_index(drop=True)
+
+    print(f"  → {len(df):,} unique LLM-annotated examples")
+
+    min_class = df["label"].value_counts().min()
+    can_stratify = min_class >= 3
+    train_df, tmp = train_test_split(
+        df, test_size=test_size, random_state=seed,
+        stratify=df["label"] if can_stratify else None,
+    )
+    min_tmp = tmp["label"].value_counts().min() if can_stratify else 0
+    val_df, test_df = train_test_split(
+        tmp, test_size=0.50, random_state=seed,
+        stratify=tmp["label"] if min_tmp >= 2 else None,
+    )
+
+    return DatasetDict({
+        "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+        "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+        "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+    })
 
 
 # ── CSV / Kaggle helpers ────────────────────────────────────────────
