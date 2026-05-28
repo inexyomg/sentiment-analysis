@@ -34,4 +34,3 @@ from .ensemble import (
 )
 from .inference import EmotionClassifier
 from .augmentation import TextAugmenter, augment_rare_classes
-from .llm_annotator import LLMAnnotator, annotate_dataset
