@@ -551,13 +551,23 @@ def load_brighter_hf() -> DatasetDict:
     return ds
 
 
-def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
+def load_dusha(
+    max_samples: Optional[int] = 50_000,
+    local_dir: Optional[str] = None,
+) -> DatasetDict:
     """
     SberDevices/Dusha — ~300k Russian speech transcripts (bi-modal corpus, Interspeech 2023).
-    4 emotion classes: angry→anger, sad→sadness, neutral→neutral, positive→joy.
-    Tries config='crowd' first, then base dataset.
-    Audio columns are ignored; only text transcripts are used.
-    max_samples caps examples per class to avoid memory pressure (None = no limit).
+    4 emotion classes: angry→anger, happy/sad→joy/sadness, neutral→neutral.
+
+    Load priority:
+      1. local_dir   — явно указанная папка с CSV/Parquet файлами
+      2. Kaggle      — автопоиск в /kaggle/input/**/*dusha*/ и /kaggle/input/*dusha*/
+      3. data/dusha/ — локальная разработка (gitignored)
+      4. HuggingFace — SberDevices/Dusha (streaming, чтобы не качать аудио)
+
+    На Kaggle: добавь датасет как "dusha" и файлы окажутся в /kaggle/input/dusha/.
+    Audio колонки игнорируются; используются только текстовые транскрипты.
+    max_samples ограничивает число примеров (None = без ограничений).
     """
     DUSHA_TO_EKMAN: Dict[str, str] = {
         "angry":      "anger",
@@ -588,6 +598,98 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
                 if cand in c.lower():
                     return c
         return None
+
+    def _find_local_dirs() -> List[str]:
+        """Return candidate local directories that might contain Dusha files."""
+        candidates: List[str] = []
+        if local_dir:
+            candidates.append(local_dir)
+        # Kaggle: datasets can be nested several levels deep, e.g.
+        #   /kaggle/input/datasets/<user>/sber-dusha-crowd/sber-dusha-crowd/
+        if os.path.isdir("/kaggle/input"):
+            import glob as _glob
+            # Any directory anywhere under /kaggle/input whose name contains 'dusha'
+            for d in sorted(_glob.glob("/kaggle/input/**/*dusha*/", recursive=True)):
+                candidates.append(d)
+            # Any TSV/CSV/Parquet file whose parent path contains 'dusha'
+            for f in _glob.glob("/kaggle/input/**/*.tsv", recursive=True):
+                if "dusha" in f.lower():
+                    candidates.append(os.path.dirname(f))
+            for ext in ("*.csv", "*.parquet"):
+                for f in _glob.glob(f"/kaggle/input/**/{ext}", recursive=True):
+                    if "dusha" in f.lower():
+                        candidates.append(os.path.dirname(f))
+        # Local development
+        for rel in ("data/dusha", "../data/dusha"):
+            p = os.path.abspath(rel)
+            if os.path.isdir(p):
+                candidates.append(p)
+        return list(dict.fromkeys(candidates))  # deduplicate, preserve order
+
+    def _load_local_dir(dirpath: str) -> Optional[DatasetDict]:
+        """Load CSV/Parquet files from a local directory."""
+        import glob as _glob
+        files = (
+            _glob.glob(os.path.join(dirpath, "**", "*.parquet"), recursive=True)
+            + _glob.glob(os.path.join(dirpath, "**", "*.csv"),     recursive=True)
+            + _glob.glob(os.path.join(dirpath, "**", "*.tsv"),     recursive=True)
+        )
+        if not files:
+            return None
+
+        parts: List[pd.DataFrame] = []
+        for fpath in sorted(files):
+            try:
+                if fpath.endswith(".parquet"):
+                    df_f = pd.read_parquet(fpath)
+                elif fpath.endswith(".tsv"):
+                    df_f = pd.read_csv(fpath, sep="\t")
+                else:
+                    df_f = pd.read_csv(fpath)
+                parts.append(df_f)
+                print(f"    read {os.path.basename(fpath)}: {len(df_f):,} rows, cols={list(df_f.columns)}")
+            except Exception as e:
+                print(f"    skip {os.path.basename(fpath)}: {e}")
+
+        if not parts:
+            return None
+
+        df = pd.concat(parts, ignore_index=True)
+        cols = list(df.columns)
+        text_col  = _find_col(cols, TEXT_COL_CANDIDATES)
+        label_col = _find_col(cols, LABEL_COL_CANDIDATES)
+
+        if not text_col or not label_col:
+            print(f"    ✗ local: cannot find text/label columns. cols={cols}")
+            return None
+
+        print(f"    columns → text='{text_col}', label='{label_col}'")
+
+        df["text"]  = df[text_col].astype(str).str.strip()
+        df["label"] = df[label_col].astype(str).str.strip().str.lower().map(
+            lambda x: EKMAN_LABEL2ID.get(DUSHA_TO_EKMAN.get(x, ""), -1)
+        )
+        df = df[["text", "label"]].query("label >= 0 and text.str.len() > 3")
+        df["label"] = df["label"].astype(int)
+
+        if df.empty:
+            print("    ✗ local: 0 valid examples after label mapping")
+            return None
+
+        # Cap per-class
+        per_class_n = (max_samples // 4) if max_samples else None
+        if per_class_n:
+            df = (df.groupby("label", group_keys=False)
+                    .apply(lambda g: g.sample(min(len(g), per_class_n), random_state=42)))
+            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        train_df, tmp = train_test_split(df, test_size=0.20, random_state=42, stratify=df["label"])
+        val_df, test_df = train_test_split(tmp, test_size=0.50, random_state=42, stratify=tmp["label"])
+        return DatasetDict({
+            "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+            "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+            "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+        })
 
     def _load_streaming(dataset_id, config, per_class_limit):
         """
@@ -661,53 +763,68 @@ def load_dusha(max_samples: Optional[int] = 50_000) -> DatasetDict:
 
         return raw.map(_convert, remove_columns=remove_cols)
 
-    # SberDevices/Dusha — try 'crowd' subset first, then base dataset
-    # Use per-class limit for streaming (max_samples / 4 classes)
     per_class_limit = (max_samples // 4) if max_samples else None
 
-    sources = [
-        ("SberDevices/Dusha", "crowd"),
-        ("SberDevices/Dusha", None),
-    ]
-
     ds = None
-    for dataset_id, config in sources:
-        tag = f"{dataset_id}" + (f" ({config})" if config else "")
-        # Try streaming first (avoids audio download on bi-modal datasets)
-        for loader_name, loader_fn, loader_arg in [
-            ("streaming", _load_streaming, per_class_limit),
-            ("normal",    _load_normal,    None),
-        ]:
-            try:
-                print(f"  Loading {tag} [{loader_name}]...")
-                ds = loader_fn(dataset_id, config, loader_arg) if loader_name == "streaming" \
-                     else loader_fn(dataset_id, config)
-                print(f"    ✓ loaded from {tag} [{loader_name}]")
+
+    # 1. Local files (Kaggle /kaggle/input or data/dusha/)
+    for dirpath in _find_local_dirs():
+        print(f"  Trying local Dusha: {dirpath}")
+        try:
+            ds = _load_local_dir(dirpath)
+            if ds is not None:
+                print(f"    ✓ loaded from local: {dirpath}")
                 break
-            except Exception as e:
-                print(f"    ✗ {tag} [{loader_name}]: {e}")
-        if ds is not None:
-            break
+        except Exception as e:
+            print(f"    ✗ local {dirpath}: {e}")
+
+    # 2. HuggingFace — streaming first (avoids audio download), then normal
+    if ds is None:
+        hf_sources = [
+            ("SberDevices/Dusha", "crowd"),
+            ("SberDevices/Dusha", None),
+        ]
+        for dataset_id, config in hf_sources:
+            tag = f"{dataset_id}" + (f" ({config})" if config else "")
+            for loader_name, loader_fn, loader_arg in [
+                ("streaming", _load_streaming, per_class_limit),
+                ("normal",    _load_normal,    None),
+            ]:
+                try:
+                    print(f"  Loading {tag} [{loader_name}]...")
+                    ds = loader_fn(dataset_id, config, loader_arg) if loader_name == "streaming" \
+                         else loader_fn(dataset_id, config)
+                    print(f"    ✓ loaded from {tag} [{loader_name}]")
+                    break
+                except Exception as e:
+                    print(f"    ✗ {tag} [{loader_name}]: {e}")
+            if ds is not None:
+                break
 
     if ds is None:
-        raise RuntimeError("Could not load Dusha from any source.")
+        raise RuntimeError(
+            "Could not load Dusha from any source.\n"
+            "На Kaggle: добавь датасет через 'Add Data' → 'dusha', "
+            "файлы окажутся в /kaggle/input/dusha/.\n"
+            "Локально: положи CSV/Parquet файлы в data/dusha/."
+        )
 
     for split in list(ds.keys()):
-        # Filter out bad labels (only needed after normal load; streaming already filtered)
-        if any(ex["label"] < 0 for ex in ds[split].select(range(min(10, len(ds[split]))))):
+        if len(ds[split]) == 0:
+            continue
+        # Filter bad labels (only HuggingFace normal load can produce label=-1)
+        sample_labels = [ds[split][i]["label"] for i in range(min(10, len(ds[split])))]
+        if any(l < 0 for l in sample_labels):
             ds[split] = ds[split].filter(lambda ex: ex["label"] >= 0 and len(ex["text"]) > 3)
-        # Per-class cap for normal-loaded splits
+        # Per-class cap for HuggingFace normal-loaded splits (local + streaming already capped)
         if max_samples and len(ds[split]) > max_samples:
             df = ds[split].to_pandas()
-            parts = []
             per_class_n = max_samples // max(df["label"].nunique(), 1)
-            for lid in df["label"].unique():
-                sub = df[df["label"] == lid]
-                if len(sub) > per_class_n:
-                    sub = sub.sample(per_class_n, random_state=42)
-                parts.append(sub)
-            df_capped = pd.concat(parts).sample(frac=1, random_state=42).reset_index(drop=True)
-            ds[split] = Dataset.from_pandas(df_capped)
+            capped = (df.groupby("label", group_keys=False)
+                        .apply(lambda g: g.sample(min(len(g), per_class_n), random_state=42)))
+            ds[split] = Dataset.from_pandas(
+                capped.sample(frac=1, random_state=42).reset_index(drop=True)
+            )
 
     ds = _normalize_splits(ds)
     total = sum(len(ds[s]) for s in ds)
