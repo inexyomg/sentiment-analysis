@@ -656,33 +656,20 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
                     rows.append({"text": text, "emotion_ids": ids})
         return pd.DataFrame(rows)
 
-    if not os.path.isdir(_KAGGLE_DIR):
+    _TSV_PATH = f"{_KAGGLE_DIR}/ru-projections.tsv"
+    if not os.path.isfile(_TSV_PATH):
         raise RuntimeError(
-            f"XED Russian dataset not found at {_KAGGLE_DIR}. "
+            f"XED Russian dataset not found at {_TSV_PATH}. "
             "Please attach the 'inexyy/xed-russian-projections' dataset in Kaggle."
         )
 
-    import glob as _glob
-    tsv_files = sorted(set(
-        _glob.glob(os.path.join(_KAGGLE_DIR, "**", "*.tsv"), recursive=True)
-        + _glob.glob(os.path.join(_KAGGLE_DIR, "*.tsv"))
-    ))
-    if not tsv_files:
-        raise RuntimeError(f"No .tsv files found in {_KAGGLE_DIR}.")
+    try:
+        df_f = _parse_tsv(_TSV_PATH)
+        print(f"  XED: loaded ru-projections.tsv: {len(df_f):,} rows")
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse {_TSV_PATH}: {e}")
 
-    dfs = []
-    for fpath in tsv_files:
-        try:
-            df_f = _parse_tsv(fpath)
-            dfs.append(df_f)
-            print(f"  XED: loaded {os.path.basename(fpath)}: {len(df_f):,} rows")
-        except Exception as e:
-            print(f"  XED: skip {os.path.basename(fpath)}: {e}")
-
-    if not dfs:
-        raise RuntimeError(f"Failed to parse any .tsv files from {_KAGGLE_DIR}.")
-
-    full_df = pd.concat(dfs, ignore_index=True)
+    full_df = df_f
     full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
     full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
     full_df["label"] = full_df["label"].astype(int)
