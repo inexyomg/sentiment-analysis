@@ -589,11 +589,23 @@ def load_cedr_m7() -> DatasetDict:
     if not label_col:
         raise ValueError(f"Cannot find label column in Aniemore/cedr-m7. Columns: {cols}")
 
-    def _convert(ex):
-        raw   = str(ex.get(label_col, "neutral")).strip().lower()
-        ekman = CEDR_M7_TO_EKMAN.get(raw)
-        label = EKMAN_LABEL2ID[ekman] if ekman else EKMAN_LABEL2ID["neutral"]
-        return {"text": str(ex[text_col] or "").strip(), "label": label}
+    # cedr-m7 может хранить labels как ClassLabel (int) или как строку
+    feat = ds[split0].features.get(label_col)
+    if hasattr(feat, "names"):
+        # ClassLabel: int → name → ekman
+        _id2ekman = {
+            idx: EKMAN_LABEL2ID.get(CEDR_M7_TO_EKMAN.get(name.strip().lower()), EKMAN_LABEL2ID["neutral"])
+            for idx, name in enumerate(feat.names)
+        }
+        def _convert(ex):
+            label = _id2ekman.get(int(ex.get(label_col, 0)), EKMAN_LABEL2ID["neutral"])
+            return {"text": str(ex[text_col] or "").strip(), "label": label}
+    else:
+        def _convert(ex):
+            raw   = str(ex.get(label_col, "neutral")).strip().lower()
+            ekman = CEDR_M7_TO_EKMAN.get(raw)
+            label = EKMAN_LABEL2ID[ekman] if ekman else EKMAN_LABEL2ID["neutral"]
+            return {"text": str(ex[text_col] or "").strip(), "label": label}
 
     ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
