@@ -565,14 +565,18 @@ def load_cedr_m7() -> DatasetDict:
     Native Russian text from LiveJournal, Lenta.ru, Twitter.
     Columns: text (str), labels (str emotion name), source (str).
     """
+    # cedr-m7 specific names → Ekman; also handles direct Ekman names as fallback
     CEDR_M7_TO_EKMAN: Dict[str, str] = {
         "neutral":    "neutral",
         "happiness":  "joy",
         "sadness":    "sadness",
-        "enthusiasm": "joy",    # energetic positive state
+        "enthusiasm": "joy",
         "fear":       "fear",
         "anger":      "anger",
         "disgust":    "disgust",
+        # direct Ekman names in case dataset uses them
+        "joy":        "joy",
+        "surprise":   "surprise",
     }
 
     print("Loading Aniemore/cedr-m7...")
@@ -589,23 +593,28 @@ def load_cedr_m7() -> DatasetDict:
     if not label_col:
         raise ValueError(f"Cannot find label column in Aniemore/cedr-m7. Columns: {cols}")
 
-    # cedr-m7 может хранить labels как ClassLabel (int) или как строку
     feat = ds[split0].features.get(label_col)
+    print(f"  columns: text='{text_col}', label='{label_col}', feature_type={type(feat).__name__}")
+
     if hasattr(feat, "names"):
-        # ClassLabel: int → name → ekman
-        _id2ekman = {
-            idx: EKMAN_LABEL2ID.get(CEDR_M7_TO_EKMAN.get(name.strip().lower()), EKMAN_LABEL2ID["neutral"])
-            for idx, name in enumerate(feat.names)
-        }
+        print(f"  ClassLabel names: {feat.names}")
+        _id2ekman = {}
+        for idx, name in enumerate(feat.names):
+            n = name.strip().lower()
+            ekman = CEDR_M7_TO_EKMAN.get(n) or (n if n in EKMAN_LABEL2ID else "neutral")
+            _id2ekman[idx] = EKMAN_LABEL2ID[ekman]
+        print(f"  id→ekman: {_id2ekman}")
         def _convert(ex):
             label = _id2ekman.get(int(ex.get(label_col, 0)), EKMAN_LABEL2ID["neutral"])
             return {"text": str(ex[text_col] or "").strip(), "label": label}
     else:
+        # String or other value type — convert via name mapping
+        sample_val = ds[split0][0].get(label_col, "")
+        print(f"  sample label value: {repr(sample_val)}")
         def _convert(ex):
             raw   = str(ex.get(label_col, "neutral")).strip().lower()
-            ekman = CEDR_M7_TO_EKMAN.get(raw)
-            label = EKMAN_LABEL2ID[ekman] if ekman else EKMAN_LABEL2ID["neutral"]
-            return {"text": str(ex[text_col] or "").strip(), "label": label}
+            ekman = CEDR_M7_TO_EKMAN.get(raw) or (raw if raw in EKMAN_LABEL2ID else "neutral")
+            return {"text": str(ex[text_col] or "").strip(), "label": EKMAN_LABEL2ID[ekman]}
 
     ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
