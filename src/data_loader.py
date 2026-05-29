@@ -646,7 +646,7 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
     cache_root = cache_dir or os.path.expanduser("~/.cache/xed_russian")
     os.makedirs(cache_root, exist_ok=True)
 
-    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/xed-russian-projection"
+    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/xed-russian-projections"
 
     def _parse_projection_tsv(path: str) -> pd.DataFrame:
         """Parse ruprojections.tsv: row_id TAB text TAB labels (comma-sep ints)."""
