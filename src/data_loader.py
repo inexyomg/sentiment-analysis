@@ -563,16 +563,21 @@ def load_cedr_m7() -> DatasetDict:
     Aniemore/cedr-m7 — CEDR corpus extended to 7 Ekman classes.
     Adds disgust and neutral on top of the base 5-class CEDR.
     Native Russian text from LiveJournal, Lenta.ru, Twitter.
-    Columns: text (str), labels (str emotion name), source (str).
     """
+    # All known Aniemore label name variants → Ekman
     CEDR_M7_TO_EKMAN: Dict[str, str] = {
         "neutral":    "neutral",
         "happiness":  "joy",
+        "happy":      "joy",
+        "joy":        "joy",
         "sadness":    "sadness",
-        "enthusiasm": "joy",    # energetic positive state
+        "sad":        "sadness",
+        "enthusiasm": "joy",
         "fear":       "fear",
         "anger":      "anger",
+        "angry":      "anger",
         "disgust":    "disgust",
+        "surprise":   "surprise",
     }
 
     print("Loading Aniemore/cedr-m7...")
@@ -580,6 +585,7 @@ def load_cedr_m7() -> DatasetDict:
 
     split0 = list(ds.keys())[0]
     cols = ds[split0].column_names
+    feats = ds[split0].features
     cols_lower = {c.lower(): c for c in cols}
 
     text_col  = cols_lower.get("text") or next((c for c in cols if "text" in c.lower()), cols[0])
@@ -589,23 +595,56 @@ def load_cedr_m7() -> DatasetDict:
     if not label_col:
         raise ValueError(f"Cannot find label column in Aniemore/cedr-m7. Columns: {cols}")
 
-    # cedr-m7 может хранить labels как ClassLabel (int) или как строку
-    feat = ds[split0].features.get(label_col)
+    feat = feats.get(label_col)
+    feat_type = type(feat).__name__
+
+    # Inspect first raw value to determine storage format
+    sample_val = ds[split0][0].get(label_col)
+    print(f"  columns: text='{text_col}', label='{label_col}'  feat={feat_type}  sample={repr(sample_val)}")
+
+    # ClassLabel (single int) → decode via feat.names
     if hasattr(feat, "names"):
-        # ClassLabel: int → name → ekman
-        _id2ekman = {
-            idx: EKMAN_LABEL2ID.get(CEDR_M7_TO_EKMAN.get(name.strip().lower()), EKMAN_LABEL2ID["neutral"])
-            for idx, name in enumerate(feat.names)
-        }
+        print(f"  ClassLabel names: {feat.names}")
+        _id2ekman = {}
+        for idx, name in enumerate(feat.names):
+            n = name.strip().lower()
+            ekman = CEDR_M7_TO_EKMAN.get(n, "neutral")
+            _id2ekman[idx] = EKMAN_LABEL2ID[ekman]
         def _convert(ex):
-            label = _id2ekman.get(int(ex.get(label_col, 0)), EKMAN_LABEL2ID["neutral"])
-            return {"text": str(ex[text_col] or "").strip(), "label": label}
+            val = ex.get(label_col, 0)
+            return {"text": str(ex[text_col] or "").strip(),
+                    "label": _id2ekman.get(int(val), EKMAN_LABEL2ID["neutral"])}
+
+    # Sequence(ClassLabel) or list of ints → multi-label
+    elif hasattr(feat, "feature") and hasattr(feat.feature, "names"):
+        cls_names = feat.feature.names
+        print(f"  Sequence(ClassLabel) names: {cls_names}")
+        _id2name = {i: n.strip().lower() for i, n in enumerate(cls_names)}
+        def _convert(ex):
+            raw = ex.get(label_col) or []
+            ids = [int(x) for x in raw] if isinstance(raw, (list, tuple)) else [int(raw)]
+            names = [_id2name.get(i, "neutral") for i in ids]
+            active = [CEDR_M7_TO_EKMAN.get(n, "neutral") for n in names]
+            return {"text": str(ex[text_col] or "").strip(),
+                    "label": _multilabel_to_ekman(
+                        [EKMAN_LABEL2ID[e] for e in active],
+                        {i: i for i in range(len(EKMAN_LABEL_NAMES))}
+                    ) if active else EKMAN_LABEL2ID["neutral"]}
+
+    # String column (Value dtype='string') → direct name lookup
     else:
         def _convert(ex):
-            raw   = str(ex.get(label_col, "neutral")).strip().lower()
-            ekman = CEDR_M7_TO_EKMAN.get(raw)
-            label = EKMAN_LABEL2ID[ekman] if ekman else EKMAN_LABEL2ID["neutral"]
-            return {"text": str(ex[text_col] or "").strip(), "label": label}
+            val = ex.get(label_col, "neutral")
+            if isinstance(val, (list, tuple)):
+                # list of strings
+                active = [CEDR_M7_TO_EKMAN.get(str(v).strip().lower(), "neutral") for v in val]
+                for priority in ("disgust", "fear"):
+                    if priority in active:
+                        return {"text": str(ex[text_col] or "").strip(), "label": EKMAN_LABEL2ID[priority]}
+                ekman = active[0] if active else "neutral"
+            else:
+                ekman = CEDR_M7_TO_EKMAN.get(str(val).strip().lower(), "neutral")
+            return {"text": str(ex[text_col] or "").strip(), "label": EKMAN_LABEL2ID[ekman]}
 
     ds = ds.map(_convert, remove_columns=cols)
     ds = _normalize_splits(ds)
