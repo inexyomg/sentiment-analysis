@@ -603,23 +603,12 @@ def load_cedr_m7() -> DatasetDict:
 
 def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
     """
-    XED — Multilingual Emotion Dataset, Russian subset (~2,400 lines).
-    Source: Helsinki-NLP/XED, movie subtitles (OPUS).
-    8 Plutchik emotions (multi-label integers 1-8) → Ekman 7 single-label.
-
-    Plutchik → Ekman mapping:
-      1 anger       → anger
-      2 anticipation→ surprise
-      3 disgust     → disgust
-      4 fear        → fear
-      5 joy         → joy
-      6 sadness     → sadness
-      7 surprise    → surprise
-      8 trust       → joy
+    XED Russian — /kaggle/input/datasets/inexyy/xed-russian-projections only.
+    Format: row_id TAB text TAB comma-separated Plutchik ints 1-8.
+    Multi-label → Ekman: disgust > fear > majority vote.
     """
-    import urllib.request
+    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/xed-russian-projections"
 
-    # Index 1-8 (alphabetical Plutchik) → Ekman label ID
     _XED2EKMAN: Dict[int, int] = {
         1: EKMAN_LABEL2ID["anger"],
         2: EKMAN_LABEL2ID["surprise"],   # anticipation
@@ -643,13 +632,7 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
             votes[lbl] = votes.get(lbl, 0) + 1
         return max(votes, key=lambda k: (votes[k], k != EKMAN_LABEL2ID["neutral"]))
 
-    cache_root = cache_dir or os.path.expanduser("~/.cache/xed_russian")
-    os.makedirs(cache_root, exist_ok=True)
-
-    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/xed-russian-projections"
-
-    def _parse_projection_tsv(path: str) -> pd.DataFrame:
-        """Parse ruprojections.tsv: row_id TAB text TAB labels (comma-sep ints)."""
+    def _parse_tsv(path: str) -> pd.DataFrame:
         rows = []
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -673,151 +656,40 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
                     rows.append({"text": text, "emotion_ids": ids})
         return pd.DataFrame(rows)
 
-    # 1. Kaggle: /kaggle/input/datasets/inexyy/xed-russian-projection/
-    if os.path.isdir(_KAGGLE_DIR):
-        import glob as _glob
-        tsv_files = sorted(_glob.glob(os.path.join(_KAGGLE_DIR, "**", "*.tsv"), recursive=True)
-                         + _glob.glob(os.path.join(_KAGGLE_DIR, "*.tsv")))
-        if tsv_files:
-            dfs = []
-            for fpath in tsv_files:
-                try:
-                    df_f = _parse_projection_tsv(fpath)
-                    dfs.append(df_f)
-                    print(f"  XED: loaded {os.path.basename(fpath)}: {len(df_f):,} rows")
-                except Exception as e:
-                    print(f"  XED: skip {os.path.basename(fpath)}: {e}")
-            if dfs:
-                full_df = pd.concat(dfs, ignore_index=True)
-                full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
-                full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
-                full_df["label"] = full_df["label"].astype(int)
-                print(f"  → {len(full_df):,} examples (XED Russian Kaggle, Plutchik→Ekman)")
-                train_df, tmp = train_test_split(full_df, test_size=0.20, random_state=42, stratify=full_df["label"])
-                val_df, test_df = train_test_split(tmp, test_size=0.50, random_state=42, stratify=tmp["label"])
-                return _normalize_splits(DatasetDict({
-                    "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
-                    "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
-                    "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
-                }))
-
-    # Try several candidate locations in the Helsinki-NLP/XED GitHub repo
-    BASE = "https://raw.githubusercontent.com/Helsinki-NLP/XED/master"
-    url_candidates = [
-        (f"{BASE}/xed_splits/ru-EXT/train.tsv", f"{BASE}/xed_splits/ru-EXT/test.tsv"),
-        (f"{BASE}/xed_splits/ru/train.tsv",     f"{BASE}/xed_splits/ru/test.tsv"),
-        (f"{BASE}/ru-finegrained.tsv",           None),
-        (f"{BASE}/data/ru.tsv",                  None),
-    ]
-
-    def _parse_tsv(path: str) -> pd.DataFrame:
-        rows = []
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                parts = line.split("\t")
-                if len(parts) < 2:
-                    continue
-                text  = parts[0].strip()
-                # labels: comma-separated integers, or "0" for neutral
-                raw_labels = [s.strip() for s in parts[-1].split(",") if s.strip()]
-                ids = []
-                for s in raw_labels:
-                    try:
-                        n = int(s)
-                        if 1 <= n <= 8:
-                            ids.append(n)
-                    except ValueError:
-                        pass
-                if text:
-                    rows.append({"text": text, "emotion_ids": ids})
-        return pd.DataFrame(rows)
-
-    def _download(url: str, save_path: str) -> bool:
-        try:
-            urllib.request.urlretrieve(url, save_path)
-            return True
-        except Exception:
-            return False
-
-    dfs: List[pd.DataFrame] = []
-
-    for train_url, test_url in url_candidates:
-        train_path = os.path.join(cache_root, "xed_ru_train.tsv")
-        test_path  = os.path.join(cache_root, "xed_ru_test.tsv")
-        single_path = os.path.join(cache_root, "xed_ru_all.tsv")
-
-        ok = False
-        if test_url:
-            # Two-file layout (train + test)
-            if (os.path.exists(train_path) or _download(train_url, train_path)) and \
-               (os.path.exists(test_path)  or _download(test_url,  test_path)):
-                try:
-                    dfs = [_parse_tsv(train_path), _parse_tsv(test_path)]
-                    ok = True
-                    print(f"  XED: loaded from {train_url}")
-                except Exception as e:
-                    print(f"  XED parse error: {e}")
-        else:
-            # Single-file layout
-            if os.path.exists(single_path) or _download(train_url, single_path):
-                try:
-                    dfs = [_parse_tsv(single_path)]
-                    ok = True
-                    print(f"  XED: loaded from {train_url}")
-                except Exception as e:
-                    print(f"  XED parse error: {e}")
-
-        if ok:
-            break
-
-    if not dfs:
-        # Fallback: try HuggingFace dataset
-        print("  XED: GitHub failed, trying HuggingFace Helsinki-NLP/XED...")
-        for hf_config in ("ru-EXT", "ru", None):
-            try:
-                kwargs = {"name": hf_config} if hf_config else {}
-                hf_ds = load_dataset("Helsinki-NLP/XED", **kwargs)
-                split0 = list(hf_ds.keys())[0]
-                hf_cols = hf_ds[split0].column_names
-                text_col  = next((c for c in hf_cols if "sentence" in c.lower() or "text" in c.lower()), hf_cols[0])
-                label_col = next((c for c in hf_cols if "label" in c.lower() or "emotion" in c.lower()), None)
-                if label_col is None:
-                    continue
-                for split_name, split_ds in hf_ds.items():
-                    df_split = split_ds.to_pandas()[[text_col, label_col]].copy()
-                    df_split.columns = ["text", "raw_labels"]
-                    def _parse_hf_labels(x):
-                        if isinstance(x, (list, tuple)):
-                            return [int(i) for i in x if 1 <= int(i) <= 8]
-                        try:
-                            return [int(x)] if 1 <= int(x) <= 8 else []
-                        except Exception:
-                            return []
-                    df_split["emotion_ids"] = df_split["raw_labels"].apply(_parse_hf_labels)
-                    dfs.append(df_split[["text", "emotion_ids"]])
-                print(f"  XED: loaded from HuggingFace (config={hf_config})")
-                break
-            except Exception as e:
-                print(f"  XED HF config={hf_config} failed: {e}")
-
-    if not dfs:
+    if not os.path.isdir(_KAGGLE_DIR):
         raise RuntimeError(
-            "Could not download XED Russian data from Helsinki-NLP/XED GitHub or HuggingFace. "
-            "Check network access."
+            f"XED Russian dataset not found at {_KAGGLE_DIR}. "
+            "Please attach the 'inexyy/xed-russian-projections' dataset in Kaggle."
         )
+
+    import glob as _glob
+    tsv_files = sorted(
+        _glob.glob(os.path.join(_KAGGLE_DIR, "**", "*.tsv"), recursive=True)
+        + _glob.glob(os.path.join(_KAGGLE_DIR, "*.tsv"))
+    )
+    if not tsv_files:
+        raise RuntimeError(f"No .tsv files found in {_KAGGLE_DIR}.")
+
+    dfs = []
+    for fpath in tsv_files:
+        try:
+            df_f = _parse_tsv(fpath)
+            dfs.append(df_f)
+            print(f"  XED: loaded {os.path.basename(fpath)}: {len(df_f):,} rows")
+        except Exception as e:
+            print(f"  XED: skip {os.path.basename(fpath)}: {e}")
+
+    if not dfs:
+        raise RuntimeError(f"Failed to parse any .tsv files from {_KAGGLE_DIR}.")
 
     full_df = pd.concat(dfs, ignore_index=True)
     full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
     full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
     full_df["label"] = full_df["label"].astype(int)
-
-    print(f"  → {len(full_df):,} examples (XED Russian, Plutchik→Ekman, movie subtitles)")
+    print(f"  → {len(full_df):,} examples (XED Russian, Plutchik→Ekman)")
 
     train_df, tmp = train_test_split(full_df, test_size=0.20, random_state=42, stratify=full_df["label"])
-    val_df, test_df = train_test_split(tmp,   test_size=0.50, random_state=42, stratify=tmp["label"])
+    val_df, test_df = train_test_split(tmp, test_size=0.50, random_state=42, stratify=tmp["label"])
 
     return _normalize_splits(DatasetDict({
         "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
