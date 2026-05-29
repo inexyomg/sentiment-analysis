@@ -640,10 +640,10 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
                 if not line:
                     continue
                 parts = line.split("\t")
-                if len(parts) < 3:
+                if len(parts) < 2:
                     continue
-                text = parts[1].strip()
-                raw_labels = [s.strip() for s in parts[2].split(",") if s.strip()]
+                text = parts[0].strip()
+                raw_labels = [s.strip() for s in parts[1].split(",") if s.strip()]
                 ids = []
                 for s in raw_labels:
                     try:
