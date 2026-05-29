@@ -287,6 +287,17 @@ def merge_datasets(
     for lbl, cnt in sorted(full_df["label"].value_counts().items()):
         print(f"  {EKMAN_ID2LABEL[lbl]:<12s}: {cnt:>6,}  ({cnt/len(full_df)*100:.1f}%)")
 
+    print("\nPer-source breakdown (disgust / fear):")
+    pivot = (full_df.groupby(["source", "label"])
+                    .size()
+                    .unstack(fill_value=0))
+    disgust_id, fear_id = EKMAN_LABEL2ID["disgust"], EKMAN_LABEL2ID["fear"]
+    for src in pivot.index:
+        d = pivot.loc[src, disgust_id] if disgust_id in pivot.columns else 0
+        f = pivot.loc[src, fear_id]    if fear_id    in pivot.columns else 0
+        total = pivot.loc[src].sum()
+        print(f"  {src:<20s}: disgust={d:>5,}  fear={f:>5,}  (total={total:,})")
+
     if max_per_class is not None:
         if isinstance(max_per_class, int):
             cap_map: Dict[int, Optional[int]] = {lid: max_per_class for lid in range(len(EKMAN_LABEL_NAMES))}
