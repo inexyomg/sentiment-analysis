@@ -707,8 +707,38 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
             break
 
     if not dfs:
+        # Fallback: try HuggingFace dataset
+        print("  XED: GitHub failed, trying HuggingFace Helsinki-NLP/XED...")
+        for hf_config in ("ru-EXT", "ru", None):
+            try:
+                kwargs = {"name": hf_config} if hf_config else {}
+                hf_ds = load_dataset("Helsinki-NLP/XED", **kwargs)
+                split0 = list(hf_ds.keys())[0]
+                hf_cols = hf_ds[split0].column_names
+                text_col  = next((c for c in hf_cols if "sentence" in c.lower() or "text" in c.lower()), hf_cols[0])
+                label_col = next((c for c in hf_cols if "label" in c.lower() or "emotion" in c.lower()), None)
+                if label_col is None:
+                    continue
+                for split_name, split_ds in hf_ds.items():
+                    df_split = split_ds.to_pandas()[[text_col, label_col]].copy()
+                    df_split.columns = ["text", "raw_labels"]
+                    def _parse_hf_labels(x):
+                        if isinstance(x, (list, tuple)):
+                            return [int(i) for i in x if 1 <= int(i) <= 8]
+                        try:
+                            return [int(x)] if 1 <= int(x) <= 8 else []
+                        except Exception:
+                            return []
+                    df_split["emotion_ids"] = df_split["raw_labels"].apply(_parse_hf_labels)
+                    dfs.append(df_split[["text", "emotion_ids"]])
+                print(f"  XED: loaded from HuggingFace (config={hf_config})")
+                break
+            except Exception as e:
+                print(f"  XED HF config={hf_config} failed: {e}")
+
+    if not dfs:
         raise RuntimeError(
-            "Could not download XED Russian data from Helsinki-NLP/XED GitHub. "
+            "Could not download XED Russian data from Helsinki-NLP/XED GitHub or HuggingFace. "
             "Check network access."
         )
 
