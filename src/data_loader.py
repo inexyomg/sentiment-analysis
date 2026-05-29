@@ -717,9 +717,12 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
     def _to_ekman(ids):
         if not ids:
             return EKMAN_LABEL2ID["neutral"]
+        ekman_ids = [_XED2EKMAN.get(i, EKMAN_LABEL2ID["neutral"]) for i in ids]
+        for priority in (EKMAN_LABEL2ID["disgust"], EKMAN_LABEL2ID["fear"]):
+            if priority in ekman_ids:
+                return priority
         votes: Dict[int, int] = {}
-        for i in ids:
-            lbl = _XED2EKMAN.get(i, EKMAN_LABEL2ID["neutral"])
+        for lbl in ekman_ids:
             votes[lbl] = votes.get(lbl, 0) + 1
         return max(votes, key=lambda k: (votes[k], k != EKMAN_LABEL2ID["neutral"]))
 
@@ -809,9 +812,14 @@ def load_brighter_hf() -> DatasetDict:
     if emo_cols:
         def _to_ekman_multi(ex):
             scores = {c: float(ex.get(c, 0) or 0) for c in emo_cols}
-            best   = max(scores, key=scores.get)
-            label  = EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"]) if scores[best] > 0 else EKMAN_LABEL2ID["neutral"]
-            return {"text": ex[text_col], "label": label}
+            active = {c: s for c, s in scores.items() if s > 0}
+            if not active:
+                return {"text": ex[text_col], "label": EKMAN_LABEL2ID["neutral"]}
+            for priority in ("disgust", "fear"):
+                if priority in active:
+                    return {"text": ex[text_col], "label": EKMAN_LABEL2ID[priority]}
+            best = max(active, key=active.get)
+            return {"text": ex[text_col], "label": EKMAN_LABEL2ID.get(best, EKMAN_LABEL2ID["neutral"])}
         ds = ds.map(_to_ekman_multi, remove_columns=cols)
     else:
         lc = next((c for c in cols if "label" in c.lower() or "emotion" in c.lower()), None)
