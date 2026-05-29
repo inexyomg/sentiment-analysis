@@ -156,39 +156,20 @@ def load_cedr() -> DatasetDict:
 
     # CEDR has binary columns per emotion or a list — handle both
     sample = ds["train"].column_names
-    feats  = ds["train"].features
 
-    _CEDR_NAME2EKMAN = {"joy": "joy", "sadness": "sadness", "surprise": "surprise",
-                        "fear": "fear", "anger": "anger"}
-
-    if "joy" in sample:
-        # Format A: separate binary columns (0/1) per emotion
-        def _convert(ex):
+    def _convert(ex):
+        # Format A: separate binary columns — joy, sadness, surprise, fear, anger
+        if "joy" in sample:
             present = [i for i, col in enumerate(["joy", "sadness", "surprise", "fear", "anger"])
                        if ex.get(col, 0)]
-            text = ex.get("text") or ex.get("sentence") or ""
-            return {"text": text, "label": _multilabel_to_ekman(present, CEDR_IDX2EKMAN)}
-    elif "labels" in sample:
-        # Format B: Sequence of indices; may be Sequence(ClassLabel) with its own ordering
-        feat = feats.get("labels")
-        if hasattr(feat, "feature") and hasattr(feat.feature, "names"):
-            _dyn_idx2ekman = {i: _CEDR_NAME2EKMAN.get(n.lower(), "neutral")
-                              for i, n in enumerate(feat.feature.names)}
+        # Format B: 'labels' list of ints
+        elif "labels" in sample:
+            present = [int(x) for x in (ex.get("labels") or [])]
         else:
-            _dyn_idx2ekman = CEDR_IDX2EKMAN
+            present = []
 
-        def _convert(ex):
-            raw = ex.get("labels") or []
-            try:
-                present = [int(x) for x in raw]
-            except (ValueError, TypeError):
-                present = []
-            text = ex.get("text") or ex.get("sentence") or ""
-            return {"text": text, "label": _multilabel_to_ekman(present, _dyn_idx2ekman)}
-    else:
-        def _convert(ex):
-            text = ex.get("text") or ex.get("sentence") or ""
-            return {"text": text, "label": EKMAN_LABEL2ID["neutral"]}
+        text = ex.get("text") or ex.get("sentence") or ""
+        return {"text": text, "label": _multilabel_to_ekman(present, CEDR_IDX2EKMAN)}
 
     remove = [c for c in sample if c not in ("text", "sentence")]
     ds = ds.map(_convert, remove_columns=remove)
