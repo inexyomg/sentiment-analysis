@@ -780,6 +780,7 @@ def load_brighter_hf() -> DatasetDict:
 
 def load_dusha(
     max_samples: Optional[int] = None,
+    max_per_class: Optional[int] = None,
     local_dir: Optional[str] = None,
 ) -> DatasetDict:
     """
@@ -1068,6 +1069,17 @@ def load_dusha(
             )
 
     ds = _normalize_splits(ds)
+
+    if max_per_class is not None:
+        new_splits = {}
+        for split, split_ds in ds.items():
+            df = split_ds.to_pandas()
+            capped = (df.groupby("label", group_keys=False)
+                        .apply(lambda g: g.sample(min(len(g), max_per_class), random_state=42))
+                        .sample(frac=1, random_state=42).reset_index(drop=True))
+            new_splits[split] = Dataset.from_pandas(capped)
+        ds = DatasetDict(new_splits)
+
     total = sum(len(ds[s]) for s in ds)
     print(f"  → {total:,} examples (Dusha, native RU, 4 classes)")
     return ds
