@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from datasets import load_dataset, Dataset, DatasetDict, concatenate_datasets
 from sklearn.model_selection import train_test_split
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Union
 
 
 # ── Ekman taxonomy ─────────────────────────────────────────────────
@@ -259,14 +259,15 @@ def merge_datasets(
     test_size:     float = 0.15,
     val_size:      float = 0.15,
     seed:          int   = 42,
-    max_per_class: Optional[int] = None,
+    max_per_class: Union[Optional[int], Dict[int, Optional[int]]] = None,
 ) -> DatasetDict:
     """
     Concatenate multiple DatasetDicts (each must have 'text' and 'label' columns)
     and re-split into train / validation / test, stratified by label.
 
-    max_per_class — cap per label before splitting (applied to the full pool,
-                    so all splits stay proportional).
+    max_per_class — cap per label before splitting (all splits stay proportional).
+      int          — same cap for every class.
+      dict[int, int|None] — per-class cap; None means no limit for that class.
     """
     print("\nMerging datasets...")
     all_records = []
@@ -287,14 +288,27 @@ def merge_datasets(
         print(f"  {EKMAN_ID2LABEL[lbl]:<12s}: {cnt:>6,}  ({cnt/len(full_df)*100:.1f}%)")
 
     if max_per_class is not None:
-        full_df = (
-            full_df
-            .groupby("label", group_keys=False)
-            .apply(lambda g: g.sample(min(len(g), max_per_class), random_state=seed))
-            .sample(frac=1, random_state=seed)
-            .reset_index(drop=True)
-        )
-        print(f"\nAfter cap ({max_per_class:,}/class): {len(full_df):,} examples")
+        if isinstance(max_per_class, int):
+            cap_map: Dict[int, Optional[int]] = {lid: max_per_class for lid in range(len(EKMAN_LABEL_NAMES))}
+        else:
+            cap_map = max_per_class
+
+        parts = []
+        for lid, grp in full_df.groupby("label", sort=True):
+            cap = cap_map.get(int(lid))
+            if cap is None:
+                parts.append(grp)
+            else:
+                parts.append(grp.sample(min(len(grp), cap), random_state=seed))
+        full_df = (pd.concat(parts)
+                     .sample(frac=1, random_state=seed)
+                     .reset_index(drop=True))
+
+        print(f"\nAfter per-class cap: {len(full_df):,} examples")
+        for lbl, cnt in sorted(full_df["label"].value_counts().items()):
+            cap = cap_map.get(int(lbl))
+            cap_str = f"{cap:,}" if cap is not None else "∞"
+            print(f"  {EKMAN_ID2LABEL[lbl]:<12s}: {cnt:>6,}  (cap={cap_str})")
 
     train_df, test_df = train_test_split(
         full_df, test_size=test_size, random_state=seed, stratify=full_df["label"]
