@@ -631,8 +631,75 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
         8: EKMAN_LABEL2ID["joy"],        # trust
     }
 
+    def _to_ekman(ids):
+        if not ids:
+            return EKMAN_LABEL2ID["neutral"]
+        ekman_ids = [_XED2EKMAN.get(i, EKMAN_LABEL2ID["neutral"]) for i in ids]
+        for priority in (EKMAN_LABEL2ID["disgust"], EKMAN_LABEL2ID["fear"]):
+            if priority in ekman_ids:
+                return priority
+        votes: Dict[int, int] = {}
+        for lbl in ekman_ids:
+            votes[lbl] = votes.get(lbl, 0) + 1
+        return max(votes, key=lambda k: (votes[k], k != EKMAN_LABEL2ID["neutral"]))
+
     cache_root = cache_dir or os.path.expanduser("~/.cache/xed_russian")
     os.makedirs(cache_root, exist_ok=True)
+
+    _KAGGLE_DIR = "/kaggle/input/datasets/inexyy/xed-russian-projection"
+
+    def _parse_projection_tsv(path: str) -> pd.DataFrame:
+        """Parse ruprojections.tsv: row_id TAB text TAB labels (comma-sep ints)."""
+        rows = []
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    continue
+                text = parts[1].strip()
+                raw_labels = [s.strip() for s in parts[2].split(",") if s.strip()]
+                ids = []
+                for s in raw_labels:
+                    try:
+                        n = int(s)
+                        if 1 <= n <= 8:
+                            ids.append(n)
+                    except ValueError:
+                        pass
+                if text:
+                    rows.append({"text": text, "emotion_ids": ids})
+        return pd.DataFrame(rows)
+
+    # 1. Kaggle: /kaggle/input/datasets/inexyy/xed-russian-projection/
+    if os.path.isdir(_KAGGLE_DIR):
+        import glob as _glob
+        tsv_files = sorted(_glob.glob(os.path.join(_KAGGLE_DIR, "**", "*.tsv"), recursive=True)
+                         + _glob.glob(os.path.join(_KAGGLE_DIR, "*.tsv")))
+        if tsv_files:
+            dfs = []
+            for fpath in tsv_files:
+                try:
+                    df_f = _parse_projection_tsv(fpath)
+                    dfs.append(df_f)
+                    print(f"  XED: loaded {os.path.basename(fpath)}: {len(df_f):,} rows")
+                except Exception as e:
+                    print(f"  XED: skip {os.path.basename(fpath)}: {e}")
+            if dfs:
+                full_df = pd.concat(dfs, ignore_index=True)
+                full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
+                full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
+                full_df["label"] = full_df["label"].astype(int)
+                print(f"  → {len(full_df):,} examples (XED Russian Kaggle, Plutchik→Ekman)")
+                train_df, tmp = train_test_split(full_df, test_size=0.20, random_state=42, stratify=full_df["label"])
+                val_df, test_df = train_test_split(tmp, test_size=0.50, random_state=42, stratify=tmp["label"])
+                return _normalize_splits(DatasetDict({
+                    "train":      Dataset.from_pandas(train_df.reset_index(drop=True)),
+                    "validation": Dataset.from_pandas(val_df.reset_index(drop=True)),
+                    "test":       Dataset.from_pandas(test_df.reset_index(drop=True)),
+                }))
 
     # Try several candidate locations in the Helsinki-NLP/XED GitHub repo
     BASE = "https://raw.githubusercontent.com/Helsinki-NLP/XED/master"
@@ -743,19 +810,6 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
         )
 
     full_df = pd.concat(dfs, ignore_index=True)
-
-    def _to_ekman(ids):
-        if not ids:
-            return EKMAN_LABEL2ID["neutral"]
-        ekman_ids = [_XED2EKMAN.get(i, EKMAN_LABEL2ID["neutral"]) for i in ids]
-        for priority in (EKMAN_LABEL2ID["disgust"], EKMAN_LABEL2ID["fear"]):
-            if priority in ekman_ids:
-                return priority
-        votes: Dict[int, int] = {}
-        for lbl in ekman_ids:
-            votes[lbl] = votes.get(lbl, 0) + 1
-        return max(votes, key=lambda k: (votes[k], k != EKMAN_LABEL2ID["neutral"]))
-
     full_df["label"] = full_df["emotion_ids"].apply(_to_ekman)
     full_df = full_df[["text", "label"]].query("text.str.len() > 3").copy()
     full_df["label"] = full_df["label"].astype(int)
