@@ -62,17 +62,21 @@ IZARD_IDX2EKMAN: Dict[int, str] = {
 
 def _multilabel_to_ekman(label_ids, idx2ekman: Dict[int, str]) -> int:
     """
-    Majority-vote conversion of a multi-label list → single Ekman class.
-    Non-neutral wins on tie; neutral is fallback when empty.
+    Convert a multi-label list → single Ekman class.
+    Priority: disgust > fear > majority vote (non-neutral wins tie).
     """
     if not label_ids:
         return EKMAN_LABEL2ID["neutral"]
 
-    votes: Dict[str, int] = {}
-    for idx in label_ids:
-        ekman = idx2ekman.get(int(idx), "neutral")
-        votes[ekman] = votes.get(ekman, 0) + 1
+    ekman_labels = [idx2ekman.get(int(idx), "neutral") for idx in label_ids]
 
+    for priority in ("disgust", "fear"):
+        if priority in ekman_labels:
+            return EKMAN_LABEL2ID[priority]
+
+    votes: Dict[str, int] = {}
+    for ekman in ekman_labels:
+        votes[ekman] = votes.get(ekman, 0) + 1
     best = max(votes, key=lambda k: (votes[k], k != "neutral"))
     return EKMAN_LABEL2ID[best]
 
@@ -108,7 +112,7 @@ def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
     emotion_bin_cols = [c for c in cols if c.lower() in _name2idx]
 
     if label_col:
-        # simplified config: 'labels' is a list of present GoEmotion indices → majority vote
+        # simplified config: 'labels' is a list of present GoEmotion indices
         def _convert(ex):
             raw = ex.get(label_col)
             if isinstance(raw, (list, tuple)):
@@ -118,50 +122,11 @@ def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
             else:
                 ids = []
             return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
-
-        print(f"  columns: text='{text_col}', label format=list")
-        ds = ds.map(_convert, remove_columns=cols)
-        ds = _normalize_splits(ds)
-
     elif emotion_bin_cols:
-        # raw config: expand multi-label → one row per unique Ekman class present.
-        # Majority vote would lose disgust/fear whenever they co-occur with commoner emotions.
-        print(f"  columns: text='{text_col}', label format=binary per-emotion (expanding multi-label)")
-        dfs = []
-        for split_name, split_ds in ds.items():
-            df = split_ds.select_columns([text_col] + emotion_bin_cols).to_pandas()
-            df["_split"] = split_name
-            dfs.append(df)
-        raw_df = pd.concat(dfs, ignore_index=True)
-
-        # Melt → one row per (text, emotion that is 1)
-        melted = raw_df.melt(
-            id_vars=[text_col, "_split"],
-            value_vars=emotion_bin_cols,
-            var_name="emotion",
-            value_name="present",
-        )
-        melted = melted[melted["present"] == 1].copy()
-        melted["label"] = (melted["emotion"].str.lower()
-                                            .map(EMOTION_TO_EKMAN)
-                                            .fillna("neutral")
-                                            .map(EKMAN_LABEL2ID))
-        melted["text"] = melted[text_col].astype(str).str.strip()
-
-        # Deduplicate: keep one row per (text, ekman label) per split
-        melted = (melted[[text_col, "_split", "label"]]
-                  .rename(columns={text_col: "text"})
-                  .dropna(subset=["label"])
-                  .drop_duplicates(subset=["text", "label"]))
-        melted["label"] = melted["label"].astype(int)
-
-        ds = DatasetDict({
-            split: Dataset.from_pandas(
-                melted[melted["_split"] == split][["text", "label"]].reset_index(drop=True)
-            )
-            for split in melted["_split"].unique()
-        })
-        ds = _normalize_splits(ds)
+        # raw config: binary column per emotion → priority-vote (disgust > fear > majority)
+        def _convert(ex):
+            ids = [_name2idx[c] for c in emotion_bin_cols if ex.get(c, 0)]
+            return {"text": str(ex[text_col] or ""), "label": _multilabel_to_ekman(ids, _idx2ekman)}
 
     else:
         raise ValueError(
@@ -170,6 +135,9 @@ def load_ru_go_emotions(config: str = "simplified") -> DatasetDict:
             f"Expected: 'labels' list column OR individual emotion binary columns."
         )
 
+    print(f"  columns: text='{text_col}', label format={'list' if label_col else 'binary per-emotion (disgust>fear>vote)'}")
+    ds = ds.map(_convert, remove_columns=cols)
+    ds = _normalize_splits(ds)
     print(f"  → {sum(len(ds[s]) for s in ds):,} examples (ru_go_emotions/{config}, RU text)")
     return ds
 
