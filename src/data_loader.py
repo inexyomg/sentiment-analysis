@@ -663,10 +663,10 @@ def load_xed_russian(cache_dir: Optional[str] = None) -> DatasetDict:
         )
 
     import glob as _glob
-    tsv_files = sorted(
+    tsv_files = sorted(set(
         _glob.glob(os.path.join(_KAGGLE_DIR, "**", "*.tsv"), recursive=True)
         + _glob.glob(os.path.join(_KAGGLE_DIR, "*.tsv"))
-    )
+    ))
     if not tsv_files:
         raise RuntimeError(f"No .tsv files found in {_KAGGLE_DIR}.")
 
