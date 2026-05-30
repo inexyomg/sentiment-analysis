@@ -45,6 +45,7 @@ class EmotionClassifier:
         self.clean = clean
         self.label_names = label_names or EKMAN_LABEL_NAMES
         self.weights = weights
+        self.meta_clf = None  # set by from_config() for stacking ensembles
 
         self.tokenizers, self.models, self.thresholds = [], [], []
         for d in model_dirs:
@@ -59,6 +60,32 @@ class EmotionClassifier:
             cfg = self.models[0].config.id2label
             if all(not str(v).startswith("LABEL_") for v in cfg.values()):
                 self.label_names = [cfg[i] for i in sorted(cfg)]
+
+    @classmethod
+    def from_config(
+        cls,
+        config_dir: str,
+        device: Optional[str] = None,
+        clean: bool = True,
+    ) -> "EmotionClassifier":
+        """
+        Load an ensemble saved with save_ensemble().
+
+        Example:
+            clf = EmotionClassifier.from_config("/kaggle/working/ensemble")
+            clf.predict_label(["Мне очень страшно"])
+        """
+        from .ensemble import load_ensemble_config
+        config, meta_clf = load_ensemble_config(config_dir)
+        inst = cls(
+            model_dirs=config["model_dirs"],
+            weights=config.get("weights"),
+            label_names=config.get("label_names"),
+            device=device,
+            clean=clean,
+        )
+        inst.meta_clf = meta_clf
+        return inst
 
     @torch.no_grad()
     def _model_probs(self, model, tokenizer, texts, max_length, batch_size):
@@ -88,6 +115,12 @@ class EmotionClassifier:
             self._model_probs(m, tok, texts, max_length, batch_size)
             for m, tok in zip(self.models, self.tokenizers)
         ]
+
+        if self.meta_clf is not None:
+            # Stacking: concatenate per-model probs and pass through meta-learner
+            X = np.hstack(per_model)
+            return self.meta_clf.predict_proba(X)
+
         return soft_voting_proba(per_model, self.weights)
 
     def predict(self, texts: Union[str, List[str]],

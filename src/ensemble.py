@@ -1,6 +1,9 @@
+import os
+import json
+import pickle
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.ensemble import GradientBoostingClassifier
@@ -162,3 +165,56 @@ def evaluate_ensemble(y_true: np.ndarray,
             "f1_weighted": f1_score(y_true, y_pred, average="weighted", zero_division=0),
         })
     return pd.DataFrame(rows).set_index("method").sort_values("f1_macro", ascending=False)
+
+
+# ──────────────────────────────────────────────
+# Save / load ensemble configuration
+# ──────────────────────────────────────────────
+
+def save_ensemble(
+    save_dir: str,
+    method: str,
+    model_dirs: List[str],
+    weights: Optional[List[float]] = None,
+    meta_clf: Optional[Any] = None,
+    label_names: Optional[List[str]] = None,
+    metrics: Optional[Dict] = None,
+) -> None:
+    """
+    Persist an ensemble so it can be reloaded for inference.
+
+    Saves:
+      - ensemble_config.json  — method, model paths, weights, label names, metrics
+      - meta_learner.pkl      — fitted sklearn meta-learner (stacking only)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    config: Dict = {
+        "method": method,
+        "model_dirs": list(model_dirs),
+        "weights": list(weights) if weights is not None else None,
+        "label_names": label_names,
+        "metrics": metrics or {},
+    }
+    with open(os.path.join(save_dir, "ensemble_config.json"), "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    if meta_clf is not None:
+        with open(os.path.join(save_dir, "meta_learner.pkl"), "wb") as f:
+            pickle.dump(meta_clf, f)
+    print(f"Ансамбль сохранён в {save_dir}")
+
+
+def load_ensemble_config(save_dir: str) -> Tuple[Dict, Optional[Any]]:
+    """
+    Load a previously saved ensemble.
+
+    Returns:
+        (config_dict, meta_clf_or_None)
+    """
+    with open(os.path.join(save_dir, "ensemble_config.json"), encoding="utf-8") as f:
+        config = json.load(f)
+    meta_clf = None
+    clf_path = os.path.join(save_dir, "meta_learner.pkl")
+    if os.path.exists(clf_path):
+        with open(clf_path, "rb") as f:
+            meta_clf = pickle.load(f)
+    return config, meta_clf
