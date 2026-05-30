@@ -211,10 +211,19 @@ MAX_LEN:  128 токенов
 
 | Метод | Описание |
 |---|---|
+| **Hard Voting** | Голосование по предсказанным меткам (majority vote) |
 | **Soft Voting** | Среднее вероятностей всех 7 моделей |
 | **Weighted Averaging** | Взвешивание по F1-macro каждой модели |
-| **Stacking (LogReg)** | Мета-модель на val_probs (out-of-fold, без утечки) |
+| **Stacking (LogReg)** | Линейная мета-модель на val_probs (out-of-fold, без утечки) |
+| **Stacking (XGBoost)** | Нелинейная мета-модель; улавливает взаимодействия между 49 входными вероятностями (7 моделей × 7 классов) |
+| **Stacking (GradientBoosting)** | Последовательный ансамбль деревьев как мета-ученик; исправляет ошибки предыдущих деревьев через градиентный спуск |
 | **Temperature Scaling** | Калибровка уверенности: минимизация NLL на val |
+
+Все stacking-варианты используют единый API:
+```python
+stacking_ensemble(val_probs, val_labels, test_probs, meta_learner='xgboost')
+# meta_learner: 'logistic' | 'svm' | 'xgboost' | 'gradient_boosting'
+```
 
 ---
 
@@ -338,6 +347,7 @@ sentiment-analysis/
 ```
 torch>=2.0, transformers>=4.40, datasets, accelerate   — обучение
 scikit-learn, scipy                                     — ансамбль, метрики
+xgboost>=1.7                                            — XGBoost мета-ученик
 pandas, numpy, matplotlib, seaborn                      — анализ
 gradio>=4.0                                             — веб-демо
 razdel>=0.5                                             — сегментация предложений
