@@ -17,3 +17,4 @@ gradio>=4.0.0
 razdel>=0.5.0
 peft>=0.6.0
 transformers-interpret>=0.10.0
+xgboost>=1.7.0
