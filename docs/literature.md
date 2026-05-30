@@ -2,7 +2,7 @@
 
 **Тема:** Ансамблевая классификация эмоций в русскоязычных текстах на основе двухэтапного дообучения трансформерных моделей и её применение в цифровых гуманитарных исследованиях
 
-Источники сгруппированы по разделам [`thesis_outline.md`](thesis_outline.md). Каждая позиция верифицирована (автор, год, издание, DOI/arXiv). В конце — сводный список и заметки по оформлению.
+Источники сгруппированы по разделам [`thesis_outline_2.md`](thesis_outline_2.md) (4 подглавы на главу). Каждая позиция верифицирована (автор, год, издание, DOI/arXiv). В конце — сводный список и заметки по оформлению.
 
 Условные пометки: ⭐ — ключевой/обязательный источник; 🇷🇺 — русскоязычный ресурс или ресурс по русскому языку; 📦 — датасет/модель/ПО (электронный ресурс).
 
@@ -10,7 +10,7 @@
 
 ## Глава 1. Теоретические основы
 
-### 1.1. Эмоции как объект вычислительного исследования
+### 1.1. Психологические модели эмоций и их роль в цифровых гуманитарных исследованиях
 
 1. ⭐ **Ekman, P.** (1992). An argument for basic emotions. *Cognition and Emotion*, 6(3–4), 169–200. DOI: [10.1080/02699939208411068](https://doi.org/10.1080/02699939208411068)
    — Обоснование 6 базовых эмоций; теоретический фундамент таксономии работы.
@@ -20,9 +20,6 @@
    — Колесо эмоций (8 базовых), психоэволюционная теория; основа разметки XED.
 4. **Izard, C. E.** (1977). *Human Emotions*. New York: Plenum Press. DOI: [10.1007/978-1-4899-2209-0](https://doi.org/10.1007/978-1-4899-2209-0)
    — Теория дифференциальных эмоций (10 базовых); основа датасета ru-izard-emotions.
-
-### 1.2. Эмоциональный анализ в цифровых гуманитарных науках (DH-фундамент)
-
 5. ⭐ **Kim, E., & Klinger, R.** (2018). A Survey on Sentiment and Emotion Analysis for Computational Literary Studies. arXiv: [1808.03137](https://arxiv.org/abs/1808.03137). (Опубл.: *Zeitschrift für digitale Geisteswissenschaften*, 2019.)
    — Обзор пяти направлений применения анализа эмоций в литературоведении; центральный DH-источник.
 6. ⭐ **Reagan, A. J., Mitchell, L., Kiley, D., Danforth, C. M., & Dodds, P. S.** (2016). The emotional arcs of stories are dominated by six basic shapes. *EPJ Data Science*, 5(1), 31. DOI: [10.1140/epjds/s13688-016-0093-1](https://doi.org/10.1140/epjds/s13688-016-0093-1). arXiv: [1606.07772](https://arxiv.org/abs/1606.07772)
@@ -34,7 +31,7 @@
 9. **Moretti, F.** (2000). Conjectures on World Literature. *New Left Review*, 1, 54–68. (См. также: Moretti, F. (2013). *Distant Reading*. London: Verso.)
    — Концепция distant reading; методологическая рамка корпусного DH-анализа.
 
-### 1.4. Эволюция методов анализа тональности и эмоций
+### 1.2. Автоматическая классификация текстов: от лексических методов к трансформерам
 
 10. ⭐ **Pang, B., & Lee, L.** (2008). Opinion Mining and Sentiment Analysis. *Foundations and Trends in Information Retrieval*, 2(1–2), 1–135. DOI: [10.1561/1500000011](https://doi.org/10.1561/1500000011)
     — Базовый обзор области анализа тональности (лексические и ML-методы).
@@ -48,18 +45,12 @@
     — word2vec; распределённые представления слов.
 15. **Pennington, J., Socher, R., & Manning, C. D.** (2014). GloVe: Global Vectors for Word Representation. In *Proc. EMNLP 2014* (pp. 1532–1543). DOI: [10.3115/v1/D14-1162](https://doi.org/10.3115/v1/D14-1162)
     — GloVe; эмбеддинги на основе глобальной статистики совстречаемости.
-
-### 1.5. Архитектура трансформеров и BERT
-
 16. ⭐ **Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., & Polosukhin, I.** (2017). Attention Is All You Need. In *Advances in NeurIPS 30*. arXiv: [1706.03762](https://arxiv.org/abs/1706.03762)
     — Архитектура Transformer, механизм self-attention.
 17. ⭐ **Devlin, J., Chang, M.-W., Lee, K., & Toutanova, K.** (2019). BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding. In *Proc. NAACL-HLT 2019* (pp. 4171–4186). DOI: [10.18653/v1/N19-1423](https://doi.org/10.18653/v1/N19-1423). arXiv: [1810.04805](https://arxiv.org/abs/1810.04805)
     — Модель BERT, MLM-предобучение, парадигма fine-tuning.
 18. **Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis, M., Zettlemoyer, L., & Stoyanov, V.** (2019). RoBERTa: A Robustly Optimized BERT Pretraining Approach. arXiv: [1907.11692](https://arxiv.org/abs/1907.11692)
     — Оптимизированный протокол предобучения BERT; основа архитектуры ruRoBERTa.
-
-### 1.6. Русскоязычные предобученные модели 🇷🇺
-
 19. ⭐ **Kuratov, Y., & Arkhipov, M.** (2019). Adaptation of Deep Bidirectional Multilingual Transformers for Russian Language. arXiv: [1905.07213](https://arxiv.org/abs/1905.07213)
     — ruBERT (DeepPavlov); адаптация мультиязычного BERT для русского.
 20. ⭐ **Zmitrovich, D., Abramov, A., Kalmykov, A., Tikhonova, M., Taktasheva, E., Astafurov, D., Baushenko, M., Snegirev, A., Shavrina, T., Markov, S., Mikhailov, V., & Fenogenova, A.** (2024). A Family of Pretrained Transformer Language Models for Russian. In *Proc. LREC-COLING 2024* (pp. 507–524). arXiv: [2309.10931](https://arxiv.org/abs/2309.10931). ACL: [2024.lrec-main.45](https://aclanthology.org/2024.lrec-main.45/)
@@ -68,7 +59,7 @@
     — XLM-RoBERTa; мультиязычная модель ансамбля.
 22. **MLP Foundations / cointegrated.** `rubert-tiny2`: компактная русскоязычная модель. HuggingFace. URL: https://huggingface.co/cointegrated/rubert-tiny2 📦
 
-### 1.7. Трансферное обучение и многоэтапное дообучение
+### 1.3. Методы работы с несбалансированными данными и ансамблирование
 
 23. ⭐ **Howard, J., & Ruder, S.** (2018). Universal Language Model Fine-tuning for Text Classification. In *Proc. ACL 2018* (pp. 328–339). DOI: [10.18653/v1/P18-1031](https://doi.org/10.18653/v1/P18-1031). arXiv: [1801.06146](https://arxiv.org/abs/1801.06146)
     — ULMFiT; принципы поэтапного дообучения языковых моделей.
@@ -76,18 +67,12 @@
     — Доменно- и задаче-адаптивное предобучение; теоретическое обоснование двухэтапной схемы.
 25. **Sun, C., Qiu, X., Xu, Y., & Huang, X.** (2019). How to Fine-Tune BERT for Text Classification? In *Chinese Computational Linguistics (CCL 2019)*, LNCS 11856 (pp. 194–206). DOI: [10.1007/978-3-030-32381-3_16](https://doi.org/10.1007/978-3-030-32381-3_16). arXiv: [1905.05583](https://arxiv.org/abs/1905.05583)
     — Практические стратегии fine-tuning BERT (LR, разморозка слоёв).
-
-### 1.8. Несбалансированные классы и аугментация
-
 26. ⭐ **Lin, T.-Y., Goyal, P., Girshick, R., He, K., & Dollár, P.** (2017). Focal Loss for Dense Object Detection. In *Proc. IEEE ICCV 2017* (pp. 2980–2988). DOI: [10.1109/ICCV.2017.324](https://doi.org/10.1109/ICCV.2017.324). arXiv: [1708.02002](https://arxiv.org/abs/1708.02002)
     — Focal Loss; функция потерь Stage-1 для борьбы с дисбалансом классов.
 27. ⭐ **Sennrich, R., Haddow, B., & Birch, A.** (2016). Improving Neural Machine Translation Models with Monolingual Data. In *Proc. ACL 2016* (pp. 86–96). DOI: [10.18653/v1/P16-1009](https://doi.org/10.18653/v1/P16-1009). arXiv: [1511.06709](https://arxiv.org/abs/1511.06709)
     — Обратный перевод (back-translation); метод аугментации Stage-2.
 28. **Wei, J., & Zou, K.** (2019). EDA: Easy Data Augmentation Techniques for Boosting Performance on Text Classification Tasks. In *Proc. EMNLP-IJCNLP 2019* (pp. 6382–6388). DOI: [10.18653/v1/D19-1670](https://doi.org/10.18653/v1/D19-1670). arXiv: [1901.11196](https://arxiv.org/abs/1901.11196)
     — Простые методы текстовой аугментации; обзорный контекст к парафразу/обратному переводу.
-
-### 1.9. Ансамблевые методы
-
 29. **Dietterich, T. G.** (2000). Ensemble Methods in Machine Learning. In *Multiple Classifier Systems (MCS 2000)*, LNCS 1857 (pp. 1–15). DOI: [10.1007/3-540-45014-9_1](https://doi.org/10.1007/3-540-45014-9_1)
     — Обзорное обоснование, почему ансамбли превосходят отдельные классификаторы.
 30. ⭐ **Wolpert, D. H.** (1992). Stacked Generalization. *Neural Networks*, 5(2), 241–259. DOI: [10.1016/S0893-6080(05)80023-1](https://doi.org/10.1016/S0893-6080(05)80023-1)
@@ -102,13 +87,10 @@
     — XGBoost; основа нелинейного мета-ученика стекинга.
 35. ⭐ **Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q.** (2017). On Calibration of Modern Neural Networks. In *Proc. ICML 2017* (pp. 1321–1330). arXiv: [1706.04599](https://arxiv.org/abs/1706.04599)
     — Temperature scaling; калибровка уверенности моделей ансамбля.
-
-### 1.10. Метрики оценки качества
-
 36. **Sokolova, M., & Lapalme, G.** (2009). A systematic analysis of performance measures for classification tasks. *Information Processing & Management*, 45(4), 427–437. DOI: [10.1016/j.ipm.2009.03.002](https://doi.org/10.1016/j.ipm.2009.03.002)
     — Систематический разбор метрик; обоснование F1-macro при дисбалансе.
 
-### 1.11. Обзор существующих решений (Related Work) 🇷🇺
+### 1.4. Существующие решения и постановка проблемы 🇷🇺
 
 37. ⭐ **Acheampong, F. A., Nunoo-Mensah, H., & Chen, W.** (2021). Transformer models for text-based emotion detection: a review of BERT-based approaches. *Artificial Intelligence Review*, 54(8), 5789–5829. DOI: [10.1007/s10462-021-09958-2](https://doi.org/10.1007/s10462-021-09958-2)
     — Обзор BERT-подходов к детекции эмоций; контекст состояния области.
@@ -121,7 +103,9 @@
 
 ## Глава 2. Данные и методология
 
-### 2.2. Источники данных 🇷🇺 📦
+*(§2.1 опирается на концептуальные источники гл. 1; §2.2–2.4 — на датасетные источники ниже.)*
+
+### 2.2. Корпусная база: источники данных и их критический анализ 🇷🇺 📦
 
 40. ⭐ **Demszky, D., Movshovitz-Attias, D., Ko, J., Cowen, A., Nemade, G., & Ravi, S.** (2020). GoEmotions: A Dataset of Fine-Grained Emotions. In *Proc. ACL 2020* (pp. 4040–4054). DOI: [10.18653/v1/2020.acl-main.372](https://doi.org/10.18653/v1/2020.acl-main.372). arXiv: [2005.00547](https://arxiv.org/abs/2005.00547)
     — Исходный датасет GoEmotions (58k, 27 эмоций); основа ru_go_emotions.
@@ -150,7 +134,9 @@
 
 ## Глава 3. Программная реализация, ансамблирование и применение в DH
 
-(§3.1–3.7 опираются преимущественно на источники глав 1.5–1.8 и документацию инструментов; §3.8–3.12 — на источники 5–9 (DH-фундамент), 29–35 (ансамбли/калибровка) и инструмент интерпретации.)
+*(§3.1–3.2 опираются на источники гл. 1.2–1.3 и документацию инструментов; §3.3 — на DH-источники гл. 1.1 и метод интерпретации; §3.4 — прикладная демонстрация.)*
+
+### 3.1. Архитектура системы и двухэтапное обучение
 
 52. **Wolf, T., et al.** (2020). Transformers: State-of-the-Art Natural Language Processing. In *Proc. EMNLP 2020: System Demonstrations* (pp. 38–45). DOI: [10.18653/v1/2020.emnlp-demos.6](https://doi.org/10.18653/v1/2020.emnlp-demos.6)
     — Библиотека HuggingFace Transformers (инструментарий обучения). 📦
@@ -160,8 +146,11 @@
     — scikit-learn (метрики, мета-ученики стекинга). 📦
 55. **seara.** `rubert-base-cased-russian-emotion-detection-ru-go-emotions` — модель, дообученная на ru_go_emotions. HuggingFace. URL: https://huggingface.co/seara 📦 🇷🇺
     — Доменная модель ансамбля (seara_goem) и аналог для бенчмарка.
+
+### 3.3. Инструменты корпусного эмоционального анализа
+
 56. **Sundararajan, M., Taly, A., & Yan, Q.** (2017). Axiomatic Attribution for Deep Networks (Integrated Gradients). In *Proc. ICML 2017* (pp. 3319–3328). arXiv: [1703.01365](https://arxiv.org/abs/1703.01365)
-    — Метод Integrated Gradients; основа `explain_prediction` (§3.10, объяснимость предсказаний).
+    — Метод Integrated Gradients; основа `explain_prediction` (объяснимость предсказаний, §3.3.2).
 
 ---
 
@@ -229,12 +218,12 @@
 
 ## Заметки по оформлению и использованию
 
-- **Объём.** Список содержит ~52 позиции (без учёта дублей соревнование/датасет BRIGHTER↔SemEval) — укладывается в требуемые 45–55 источников.
-- **Баланс.** ~30 рецензируемых работ (конференции/журналы), ~7 русскоязычных датасетов/корпусов, остальное — фундаментальные модели и электронные ресурсы (датасеты, ПО). Для гуманитарной ВКР соотношение допустимое; при необходимости усилить теоретическую часть — добавить 2–3 источника по психологии эмоций и по DH (см. ниже).
+- **Объём.** Список содержит ~52 позиции — укладывается в требуемые 45–55 источников.
+- **Баланс.** ~30 рецензируемых работ (конференции/журналы), ~7 русскоязычных датасетов/корпусов, остальное — фундаментальные модели и электронные ресурсы (датасеты, ПО). Для гуманитарной ВКР соотношение допустимое.
 - **ГОСТ.** Сводный список дан в приближённом к ГОСТ Р 7.0.5–2008 виде. Перед сдачей проверить: для электронных ресурсов обязательны «URL:» и «(дата обращения: …)»; для статей — «// Название издания. Год. Том, № выпуска. С. …».
-- **Что можно добавить при расширении до 55+** (опционально, ещё не верифицировал детали выходных данных):
+- **Что можно добавить при расширении до 55+** (опционально):
   - Scherer K. R. (2005) о компонентных моделях эмоций — усиление §1.1;
-  - Mohammad S. (2018) «Obtaining Reliable Human Ratings of Valence, Arousal, and Dominance» (NRC-VAD) — усиление §1.4;
-  - обзор русскоязычного эмоционального NLP (например, обзорные статьи в *Language Resources and Evaluation*, 2025) — усиление §1.11;
-  - Vania C. (или иной источник) по cross-lingual transfer для low-resource — усиление §1.6.
-- **Проверка перед цитированием.** Номера страниц для ACL/EMNLP/COLING указаны по ACL Anthology; для arXiv-препринтов приведены ID. DOI кликабельны. Рекомендуется при финальной вёрстке открыть 3–5 ключевых (⭐) ссылок и сверить выходные данные.
+  - Mohammad S. (2018) «Obtaining Reliable Human Ratings of Valence, Arousal, and Dominance» (NRC-VAD) — усиление §1.2;
+  - обзор русскоязычного эмоционального NLP (например, обзорные статьи в *Language Resources and Evaluation*, 2025) — усиление §1.4;
+  - Paszke A. et al. уже включён (№53) — при необходимости добавить Loshchilov (AdamW).
+- **Проверка перед цитированием.** DOI кликабельны; arXiv ID приведены. Рекомендуется при финальной вёрстке открыть 3–5 ключевых (⭐) ссылок и сверить выходные данные.
