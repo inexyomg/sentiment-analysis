@@ -42,10 +42,13 @@
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
 │  Блок 3: 03_ensemble.ipynb                                          │
-│  Hard/Soft/Weighted Voting · Stacking (LogReg/SVM/XGBoost/GBM)      │
-│  Temperature Scaling · Финальная оценка · Сохранение лучшей модели  │
+│  §1–5: Hard/Soft/Weighted Voting · Stacking · Temperature Scaling   │
+│        Финальная оценка · Сохранение лучшей модели-ансамбля         │
+│  §6:   Knowledge Distillation — 3 учителя → 1 xlm-roberta-base     │
+│        Loss = α·KL/T + (1−α)·CE  (T=2.0, α=0.7, 5 эпох)          │
 │  Графики: model_comparison.png · cm_best_ensemble.png               │
-│  JSON: final_summary.json · ensemble/ensemble_config.json           │
+│           distillation_training.png                                  │
+│  JSON/pkl: final_summary.json · ensemble/ · distillation_results    │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
@@ -433,6 +436,23 @@ sentiment-analysis/
 | `emotion_heatmap.png` | Хитмап эмоциональных профилей по группам (авторы / жанры / источники) |
 | `radar_profiles.png` | Паукообразный (radar) график профилей нескольких авторов/групп |
 | `wordclouds.png` | Облака слов, характерных для каждой из 7 эмоций |
+
+### Блок 5 — Дистилляция
+
+| Файл | Что содержит |
+|---|---|
+| `distill_soft_labels_train.npy` | Кеш мягких меток учителей на Stage-2 train — shape `(N_train, 7)`, избавляет от повторного инференса |
+| `distillation_training.png` | Кривые потерь (total/KL/CE) и F1-macro по эпохам |
+| `distillation_results.json` | Гиперпараметры, best_epoch, финальные метрики, история обучения |
+| `models/distilled_xlmr/` | Готовый HuggingFace checkpoint студента (`config.json` + веса + токенизатор) |
+
+Загрузка дистиллированной модели:
+```python
+from src.inference import EmotionClassifier
+clf = EmotionClassifier("results/models/distilled_xlmr")
+clf.predict_label(["Мне очень страшно идти туда одному"])
+# ['fear']
+```
 
 ---
 
