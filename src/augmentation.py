@@ -67,9 +67,11 @@ class TextAugmenter:
                     **inputs,
                     num_return_sequences=n_variants,
                     do_sample=True,
-                    temperature=0.8,
-                    top_p=0.95,
-                    repetition_penalty=3.0,
+                    temperature=0.7,
+                    top_p=0.9,
+                    repetition_penalty=1.2,        # мягкий штраф; 3.0 ломал слова в мусор
+                    no_repeat_ngram_size=3,        # без зацикливания
+                    encoder_no_repeat_ngram_size=4,  # заставляет отличаться от входа → реальный парафраз
                     max_length=max_length,
                 )
 
@@ -113,6 +115,27 @@ class TextAugmenter:
         en = self._translate_batch(texts, self._ru2en_model, self._ru2en_tok, batch_size=batch_size)
         ru = self._translate_batch(en,    self._en2ru_model, self._en2ru_tok, batch_size=batch_size)
         return ru
+
+
+import re
+
+_RU_WORD = re.compile(r"[а-яёА-ЯЁ]+")
+
+
+def _is_valid_ru(text: str, min_cyrillic_ratio: float = 0.6, min_words: int = 2) -> bool:
+    """
+    Отсеивает мусорные парафразы: текст должен быть преимущественно кириллицей
+    и содержать несколько настоящих слов. Защита от поломанной генерации.
+    """
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 3:
+        return False
+    cyrillic = sum(1 for c in letters if "а" <= c.lower() <= "я" or c.lower() == "ё")
+    if cyrillic / len(letters) < min_cyrillic_ratio:
+        return False
+    # реальные слова длиной ≥ 3 буквы
+    words = [w for w in _RU_WORD.findall(text) if len(w) >= 3]
+    return len(words) >= min_words
 
 
 def augment_rare_classes(
@@ -175,7 +198,7 @@ def augment_rare_classes(
         filtered = []
         for text in generated:
             t = text.strip()
-            if len(t) >= min_text_len and t.lower() not in seen:
+            if len(t) >= min_text_len and t.lower() not in seen and _is_valid_ru(t):
                 seen.add(t.lower())
                 filtered.append(t)
 
