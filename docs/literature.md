@@ -148,9 +148,9 @@
 
 ---
 
-## Глава 3. Программная реализация
+## Глава 3. Программная реализация, ансамблирование и применение в DH
 
-(Опирается преимущественно на источники глав 1.5–1.8 и документацию инструментов.)
+(§3.1–3.7 опираются преимущественно на источники глав 1.5–1.8 и документацию инструментов; §3.8–3.12 — на источники 5–9 (DH-фундамент), 29–35 (ансамбли/калибровка) и инструмент интерпретации.)
 
 52. **Wolf, T., et al.** (2020). Transformers: State-of-the-Art Natural Language Processing. In *Proc. EMNLP 2020: System Demonstrations* (pp. 38–45). DOI: [10.18653/v1/2020.emnlp-demos.6](https://doi.org/10.18653/v1/2020.emnlp-demos.6)
     — Библиотека HuggingFace Transformers (инструментарий обучения). 📦
@@ -160,15 +160,8 @@
     — scikit-learn (метрики, мета-ученики стекинга). 📦
 55. **seara.** `rubert-base-cased-russian-emotion-detection-ru-go-emotions` — модель, дообученная на ru_go_emotions. HuggingFace. URL: https://huggingface.co/seara 📦 🇷🇺
     — Доменная модель ансамбля (seara_goem) и аналог для бенчмарка.
-
----
-
-## Глава 4. Ансамблирование и применение в DH
-
-(Опирается на источники 5–9 — DH-фундамент, 29–35 — ансамбли/калибровка, плюс инструмент интерпретации.)
-
 56. **Sundararajan, M., Taly, A., & Yan, Q.** (2017). Axiomatic Attribution for Deep Networks (Integrated Gradients). In *Proc. ICML 2017* (pp. 3319–3328). arXiv: [1703.01365](https://arxiv.org/abs/1703.01365)
-    — Метод Integrated Gradients; основа `explain_prediction` (объяснимость предсказаний).
+    — Метод Integrated Gradients; основа `explain_prediction` (§3.10, объяснимость предсказаний).
 
 ---
 
