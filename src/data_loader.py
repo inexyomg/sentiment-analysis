@@ -285,6 +285,20 @@ def merge_datasets(
     full_df = full_df.dropna(subset=["text", "label"])
     full_df["label"] = full_df["label"].astype(int)
 
+    # Дедупликация ДО сплита — иначе одинаковые тексты (повторы внутри Dusha,
+    # multilabel-строки GoEmotions, пересечения источников) разлетаются по
+    # train/val/test и дают утечку. Нормализуем по тексту, оставляем первое вхождение.
+    before_dedup = len(full_df)
+    full_df["_key"] = full_df["text"].astype(str).str.strip().str.lower()
+    full_df = (
+        full_df[full_df["_key"].str.len() > 0]
+        .drop_duplicates(subset=["_key"])
+        .drop(columns=["_key"])
+        .reset_index(drop=True)
+    )
+    print(f"\nDeduplication: {before_dedup:,} → {len(full_df):,} "
+          f"(удалено {before_dedup - len(full_df):,} дублей)")
+
     print(f"\nTotal before split: {len(full_df):,}")
     print("Label distribution:")
     for lbl, cnt in sorted(full_df["label"].value_counts().items()):
