@@ -26,6 +26,8 @@
 │  8 источников → маппинг в 7 классов → дедупликация → split          │
 │  → аугментация редких классов                                        │
 │  Выход: stage1_data_augmented / stage2_data_augmented               │
+│  Графики: distribution_before_aug.png · s1_augmentation.png         │
+│           s2_augmentation.png                                        │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
@@ -34,18 +36,24 @@
 │  Stage 2: fine-tune на чистом нативном RU (CE+smoothing, lr=5e-6)   │
 │  7 моделей: rubert · xlm-roberta · rubert-tiny · rubert-large ·     │
 │             ruroberta-large · aniemore-emotion · seara-goem          │
+│  Выход (на модель): test/val probs·preds·labels.npy + results.json  │
+│  Графики: two_stage_comparison.png · per_class_f1_two_stage.png      │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
 │  Блок 3: 03_ensemble.ipynb                                          │
-│  Soft voting · Stacking (LogReg) · Temperature scaling              │
-│  Финальная оценка по всем классам                                    │
+│  Hard/Soft/Weighted Voting · Stacking (LogReg/SVM/XGBoost/GBM)      │
+│  Temperature Scaling · Финальная оценка · Сохранение лучшей модели  │
+│  Графики: model_comparison.png · cm_best_ensemble.png               │
+│  JSON: final_summary.json · ensemble/ensemble_config.json           │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
 │  Блок 4: 04_applications.ipynb                                      │
-│  DH-инструменты: эмоц. дуги, временные ряды, хитмапы               │
+│  DH-инструменты: эмоц. дуги, временные ряды, хитмапы, облака слов  │
 │  + Gradio-демо (app/app.py)                                         │
+│  Графики: emotion_arc.png · emotion_timeline.png · heatmap.png      │
+│           radar_profiles.png · wordclouds.png                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -276,11 +284,19 @@ data/
 ```bash
 pip install -r requirements.txt
 
-# Инференс
+# Инференс через ансамбль двух моделей (soft voting)
 python -c "
 from src.inference import EmotionClassifier
 clf = EmotionClassifier(['results/models/rubert', 'results/models/xlmroberta'])
 print(clf.predict('Мне очень страшно идти туда одному'))
+"
+
+# Инференс через сохранённый финальный ансамбль (после 03_ensemble.ipynb)
+python -c "
+from src.inference import EmotionClassifier
+clf = EmotionClassifier.from_config('results/ensemble')
+print(clf.predict_label(['Мне очень страшно идти туда одному']))
+# ['fear']
 "
 
 # Gradio-демо
@@ -301,9 +317,10 @@ sentiment-analysis/
 │   ├── augmentation.py     — TextAugmenter (rut5 + MarianMT), _is_valid_ru фильтр,
 │   │                         augment_rare_classes (раздельные методы S1/S2)
 │   ├── trainer.py          — WeightedTrainer (focal/CE+smoothing), train_two_stage
-│   ├── ensemble.py         — soft_voting, weighted_avg, stacking, temperature_scaling
+│   ├── ensemble.py         — voting, stacking, temperature scaling,
+│   │                         save_ensemble / load_ensemble_config
 │   ├── evaluation.py       — evaluate_predictions, confusion_matrix, compare_models
-│   └── inference.py        — EmotionClassifier (batch + ансамбль)
+│   └── inference.py        — EmotionClassifier (batch + ансамбль + from_config)
 │
 ├── notebooks/
 │   ├── 01_data_preparation.ipynb   — Блок 1: данные, дедуп, аугментация
@@ -321,8 +338,101 @@ sentiment-analysis/
 │   └── app.py              — Gradio-демо (HuggingFace Spaces совместим)
 │
 ├── results/                — чекпоинты моделей и результаты (gitignored)
+│   ├── models/
+│   │   └── {model_key}/    — веса + токенизатор (Stage-2 финал)
+│   ├── ensemble/           — финальный ансамбль
+│   └── …                   — отчёты и графики (см. Выходные файлы)
 └── requirements.txt
 ```
+
+---
+
+## Выходные файлы
+
+Все файлы пишутся в `WORKING_DIR` (`/kaggle/working` на Kaggle, `results/` локально).
+
+### Блок 1 — подготовка данных
+
+| Файл | Что содержит |
+|---|---|
+| `distribution_before_aug.png` | Гистограмма классов Stage-1 train до аугментации |
+| `s1_augmentation.png` | Сравнение распределения до/после аугментации Stage-1 |
+| `s2_augmentation.png` | Сравнение распределения до/после аугментации Stage-2 |
+
+### Блок 2 — обучение (создаётся для каждой из 7 моделей)
+
+Путь: `models/{model_key}/` (например `models/rubert/`, `models/xlmroberta/` и т.д.)
+
+| Файл | Что содержит |
+|---|---|
+| `test_probs.npy` | Матрица вероятностей на тест. выборке — shape `(N, 7)` |
+| `test_preds.npy` | Argmax-предсказания на тест. выборке — shape `(N,)` |
+| `test_labels.npy` | Истинные метки тест. выборки — shape `(N,)` |
+| `val_probs.npy` | Матрица вероятностей на val-выборке — shape `(M, 7)` |
+| `val_preds.npy` | Argmax-предсказания на val-выборке — shape `(M,)` |
+| `val_labels.npy` | Истинные метки val-выборки — shape `(M,)` |
+| `results.json` | Accuracy, F1-macro/weighted, полный `classification_report` по классам |
+| `thresholds.npy` | Пороги per-class (только при multi-label) |
+| `config.json` + веса | Стандартный HuggingFace checkpoint для загрузки через `from_pretrained` |
+
+Общие файлы Блока 2:
+
+| Файл | Что содержит |
+|---|---|
+| `label_names.json` | Список `["anger","disgust","fear","joy","sadness","surprise","neutral"]` |
+| `ensemble_config.json` | Пути к Stage-2 директориям + гиперпараметры обучения |
+| `two_stage_comparison.png` | Столбиковый график F1-macro Stage 1 vs Stage 2 по всем 7 моделям |
+| `per_class_f1_two_stage.png` | Per-class F1 после двухэтапного обучения (7 подграфиков, один на модель) |
+
+### Блок 3 — ансамблирование
+
+| Файл | Что содержит |
+|---|---|
+| `model_comparison.png` | F1-macro лучшего ансамбля и всех индивидуальных моделей (bar chart) |
+| `cm_best_ensemble.png` | Матрица ошибок (confusion matrix) лучшего ансамбля — 7×7, нормализованная |
+| `final_summary.json` | Все метрики: индивидуальные модели, все voting-методы, все stacking-методы; лучший метод и его F1 |
+| `ensemble/ensemble_config.json` | Конфиг финального ансамбля: метод, пути к моделям, веса, label_names, F1 |
+| `ensemble/meta_learner.pkl` | Обученная мета-модель sklearn (только для stacking-вариантов) |
+
+Структура `final_summary.json`:
+```json
+{
+  "task": "emotion classification (Ekman 7-class)",
+  "label_names": ["anger", "disgust", "fear", "joy", "sadness", "surprise", "neutral"],
+  "individual_models": { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
+  "ensemble_methods":  { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
+  "stacking_methods":  { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
+  "best_ensemble": "Weighted Averaging",
+  "best_f1_macro": 0.7812
+}
+```
+
+Структура `results.json` (для каждой модели):
+```json
+{
+  "model_name": "ruroberta_large",
+  "accuracy": 0.7934,
+  "f1_macro": 0.7801,
+  "f1_weighted": 0.7920,
+  "test_report": {
+    "anger":    { "precision": 0.81, "recall": 0.79, "f1-score": 0.80, "support": 412 },
+    "disgust":  { … },
+    "…": { … },
+    "macro avg":    { "precision": …, "recall": …, "f1-score": 0.7801, "support": 2840 },
+    "weighted avg": { … }
+  }
+}
+```
+
+### Блок 4 — DH-инструменты
+
+| Файл | Что содержит |
+|---|---|
+| `emotion_arc.png` | Эмоциональная дуга текста: линии вероятностей + полоска доминирующей эмоции по предложениям |
+| `emotion_timeline.png` | Временной ряд долей эмоций по датам (агрегация по неделям/месяцам) |
+| `emotion_heatmap.png` | Хитмап эмоциональных профилей по группам (авторы / жанры / источники) |
+| `radar_profiles.png` | Паукообразный (radar) график профилей нескольких авторов/групп |
+| `wordclouds.png` | Облака слов, характерных для каждой из 7 эмоций |
 
 ---
 
