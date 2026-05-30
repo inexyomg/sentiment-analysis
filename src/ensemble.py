@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import accuracy_score, f1_score, log_loss
 from scipy.special import softmax
@@ -92,7 +93,7 @@ def stacking_ensemble(
                           held-out split (validation), per model.
         meta_train_labels: labels for that held-out split.
         test_probs: list of (n_test, n_classes) arrays — base model probs on test.
-        meta_learner: 'logistic' | 'svm'
+        meta_learner: 'logistic' | 'svm' | 'xgboost' | 'gradient_boosting'
         cv: folds for the cross-validation diagnostic on the meta-train set.
 
     Returns:
@@ -105,6 +106,33 @@ def stacking_ensemble(
         clf = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
     elif meta_learner == "svm":
         clf = SVC(probability=True, kernel="rbf", random_state=42)
+    elif meta_learner == "xgboost":
+        try:
+            from xgboost import XGBClassifier
+        except ImportError:
+            raise ImportError("xgboost not installed. Run: pip install xgboost")
+        n_classes = len(np.unique(meta_train_labels))
+        clf = XGBClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="multi:softprob",
+            num_class=n_classes,
+            eval_metric="mlogloss",
+            use_label_encoder=False,
+            random_state=42,
+            verbosity=0,
+        )
+    elif meta_learner == "gradient_boosting":
+        clf = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.8,
+            random_state=42,
+        )
     else:
         raise ValueError(f"Unknown meta_learner: {meta_learner}")
 
