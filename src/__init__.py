@@ -31,6 +31,8 @@ from .ensemble import (
     evaluate_ensemble,
     fit_temperature,
     temperature_scaling,
+    save_ensemble,
+    load_ensemble_config,
 )
 from .inference import EmotionClassifier
 from .augmentation import TextAugmenter, augment_rare_classes
