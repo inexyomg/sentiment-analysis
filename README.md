@@ -1,10 +1,12 @@
-# Анализ эмоциональной тональности русскоязычных текстов
+# Анализ эмоциональной тональности русскоязычных текстов цифровыми методами
 
-Полный исследовательский пайплайн для 7-классовой классификации эмоций по таксономии Экмана в русскоязычных текстах. Ансамбль из 7 трансформер-моделей, двухэтапное обучение, прикладные DH-инструменты.
+*Выпускная квалификационная работа (магистратура) · Цифровые методы в гуманитарных науках.*
+
+Полный воспроизводимый исследовательский пайплайн для 7-классовой классификации эмоций по таксономии Экмана в русскоязычных текстах: **ансамбль из 3 трансформеров-учителей**, двухэтапное обучение, **дистилляция знаний в одну компактную модель-студент** и прикладные DH-инструменты.
 
 ---
 
-## Таксономия эмоций (Ekman, 7 классов)
+## Таксономия эмоций (Ekman, 7 классов, single-label)
 
 | ID | Эмоция | Примеры текстов |
 |---|---|---|
@@ -34,8 +36,7 @@
 │  Блок 2: 02_training.ipynb                                          │
 │  Stage 1: pretrain на большом корпусе (focal loss, lr=2e-5)         │
 │  Stage 2: fine-tune на чистом нативном RU (CE+smoothing, lr=5e-6)   │
-│  7 моделей: rubert · xlm-roberta · rubert-tiny · rubert-large ·     │
-│             ruroberta-large · aniemore-emotion · seara-goem          │
+│  3 модели-учителя: ruroberta_large · xlmroberta · seara_goem         │
 │  Выход (на модель): test/val probs·preds·labels.npy + results.json  │
 │  Графики: two_stage_comparison.png · per_class_f1_two_stage.png      │
 └──────────────────────────┬──────────────────────────────────────────┘
@@ -44,8 +45,8 @@
 │  Блок 3: 03_ensemble.ipynb                                          │
 │  §1–5: Hard/Soft/Weighted Voting · Stacking · Temperature Scaling   │
 │        Финальная оценка · Сохранение лучшей модели-ансамбля         │
-│  §6:   Knowledge Distillation — 3 учителя → 1 xlm-roberta-base     │
-│        Loss = α·KL/T + (1−α)·CE  (T=2.0, α=0.7, 5 эпох)          │
+│  §6:   Knowledge Distillation — 3 учителя → 1 студент ruBert-large  │
+│        Loss = α·KL/T² + (1−α)·CE  (двухэтапная: T=4.0 → T=2.0)      │
 │  Графики: model_comparison.png · cm_best_ensemble.png               │
 │           distillation_training.png                                  │
 │  JSON/pkl: final_summary.json · ensemble/ · distillation_results    │
@@ -53,10 +54,9 @@
                            │
 ┌──────────────────────────▼──────────────────────────────────────────┐
 │  Блок 4: 04_applications.ipynb                                      │
-│  DH-инструменты: эмоц. дуги, временные ряды, хитмапы, облака слов  │
-│  + Gradio-демо (app/app.py)                                         │
-│  Графики: emotion_arc.png · emotion_timeline.png · heatmap.png      │
-│           radar_profiles.png · wordclouds.png                       │
+│  DH-инструменты: облака слов, энтропийный анализ, важность токенов, │
+│  матрица ошибок, лексические профили, навигатор корпуса             │
+│  Графики: emotion_wordclouds.png · emotion_entropy.png · …          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -151,7 +151,7 @@ full_df = full_df.drop_duplicates(subset=["_key"])
 | disgust | ~3,872 | 15,000 |
 | sadness | ~10,933 | 15,000 |
 
-Stage-1 использует `method='both'` (паrafраз + обратный перевод) для максимального разнообразия. Focal Loss устойчив к шуму аугментации.
+Stage-1 использует `method='both'` (парафраз + обратный перевод) для максимального разнообразия. Focal Loss устойчив к шуму аугментации.
 
 ### Stage 2 (`AUG_METHOD_S2 = 'backtranslation'`, цель 1,200/класс в train)
 
@@ -173,22 +173,25 @@ Stage-2 использует только `backtranslation` — обратный
 
 ---
 
-## Ансамбль из 7 моделей
+## Ансамбль из 3 моделей-учителей + дистилляция в студента
+
+Гетерогенный ансамбль из трёх взаимодополняющих трансформеров (разные домены и языки предобучения), знания которого затем сжимаются в одну модель-студент через дистилляцию.
+
+### Модели-учителя
 
 | Ключ | HuggingFace ID | Параметры | Особенности |
 |---|---|---|---|
-| `rubert` | `blanchefort/rubert-base-cased-sentiment` | ~180M | RU сентимент-претрейн |
-| `xlmroberta` | `xlm-roberta-base` | ~278M | 100 языков, лучший кросс-лингвальный перенос |
-| `rubert_tiny` | `cointegrated/rubert-tiny2` | ~12M | быстрый, ~85% качества base |
-| `rubert_large` | `ai-forever/ruBert-large` | ~340M | SberAI, мощная RU база |
-| `ruroberta_large` | `ai-forever/ruRoberta-large` | ~355M | SberAI, RoBERTa-архитектура на RU |
-| `aniemore_emotion` | `Aniemore/rubert-tiny2-russian-emotion-detection` | ~12M | fine-tuned на CEDR+RESD эмоциях |
-| `seara_goem` | `seara/rubert-base-cased-russian-emotion-detection-ru-go-emotions` | ~180M | fine-tuned на GoEmotions RU (28 классов) |
+| `ruroberta_large` | `ai-forever/ruRoberta-large` | ~355M | SberAI, RoBERTa-архитектура, сильный RU-претрейн |
+| `xlmroberta` | `xlm-roberta-base` | ~278M | 100 языков, кросс-лингвальный перенос |
+| `seara_goem` | `seara/rubert-base-cased-russian-emotion-detection-ru-go-emotions` | ~180M | fine-tuned на GoEmotions RU |
 
-**Batch sizes и gradient accumulation steps** подобраны под VRAM T4 (16GB):
-- large-модели: batch=8, grad_accum=4 (эффективный batch=32)
-- base-модели: batch=16–32, grad_accum=1–2
-- tiny-модели: batch=64, grad_accum=1
+### Модель-студент
+
+| Ключ | HuggingFace ID | Параметры | Особенности |
+|---|---|---|---|
+| `distilled_rubert_large` | `ai-forever/ruBert-large` | ~427M | та же архитектура, что у учителя ruRoberta-large; обучается на мягких метках ансамбля |
+
+Дистилляция позволяет получить **одну** модель уровня всего ансамбля (см. раздел «Результаты»): не нужно держать в памяти и инференсить три модели сразу.
 
 ---
 
@@ -216,6 +219,10 @@ MAX_LEN:  128 токенов
 
 Двухэтапный подход даёт +2–4% F1-macro по сравнению с обучением только на объединённых данных.
 
+**Batch sizes и gradient accumulation steps** подобраны под VRAM T4 (16 GB):
+- large-модели (ruroberta_large, ruBert-large): batch=8–16, grad_accum=2–4, gradient checkpointing
+- base-модели (xlmroberta, seara_goem): batch=16–32, grad_accum=1–2
+
 ---
 
 ## Ансамблирование (Блок 3)
@@ -223,31 +230,77 @@ MAX_LEN:  128 токенов
 | Метод | Описание |
 |---|---|
 | **Hard Voting** | Голосование по предсказанным меткам (majority vote) |
-| **Soft Voting** | Среднее вероятностей всех 7 моделей |
+| **Soft Voting** | Среднее вероятностей всех 3 моделей |
 | **Weighted Averaging** | Взвешивание по F1-macro каждой модели |
 | **Stacking (LogReg)** | Линейная мета-модель на val_probs (out-of-fold, без утечки) |
-| **Stacking (XGBoost)** | Нелинейная мета-модель; улавливает взаимодействия между 49 входными вероятностями (7 моделей × 7 классов) |
-| **Stacking (GradientBoosting)** | Последовательный ансамбль деревьев как мета-ученик; исправляет ошибки предыдущих деревьев через градиентный спуск |
+| **Stacking (SVM / XGBoost / GradientBoosting)** | Нелинейные мета-модели; улавливают взаимодействия между 21 входной вероятностью (3 модели × 7 классов) |
 | **Temperature Scaling** | Калибровка уверенности: минимизация NLL на val |
 
 Все stacking-варианты используют единый API:
 ```python
-stacking_ensemble(val_probs, val_labels, test_probs, meta_learner='xgboost')
+stacking_ensemble(val_probs, val_labels, test_probs, meta_learner='logistic')
 # meta_learner: 'logistic' | 'svm' | 'xgboost' | 'gradient_boosting'
 ```
 
 ---
 
-## Прикладные инструменты (Блок 4)
+## Дистилляция знаний (Блок 3, §6)
 
-| Функция | Описание |
-|---|---|
-| `emotion_arc(text)` | Эмоциональная дуга нарратива по предложениям (`razdel`) |
-| `emotion_timeline(df, date_col)` | Временной ряд эмоций в датированном корпусе |
-| `emotion_heatmap(df, group_col)` | Профили по авторам / жанрам / источникам |
-| `radar_chart(profiles)` | Паукообразное сравнение нескольких профилей |
-| `explain_prediction(text)` | Атрибуция токенов (Integrated Gradients) |
-| `emotion_wordclouds(df)` | Облака слов, характерных для каждой эмоции |
+Три учителя усредняют свои вероятности → получаются **мягкие метки**, на которых обучается студент `ruBert-large`. Дистилляция двухэтапная — по аналогии с обучением учителей:
+
+```
+3 учителя → avg(probs) = мягкие метки
+                  │
+                  ▼
+       Студент: ruBert-large
+
+STAGE-1D · 84k примеров        STAGE-2D · 11k нативных RU
+широкое знание                 точная Ekman-разметка
+T=4.0 · α=0.9 · lr=5e-5        T=2.0 · α=0.7 · lr=2e-5
+
+LOSS = α · T² · KL(student/T ‖ teacher/T) + (1−α) · CE
+```
+
+Один студент достигает качества всего ансамбля **при одной модели вместо трёх**.
+
+---
+
+## Результаты
+
+Метрики на едином тестовом наборе (нативный RU, Stage-2 test).
+
+### Одиночные модели
+
+| Модель | Accuracy | F1-macro | F1-weighted |
+|---|---|---|---|
+| ruRoBERTa-large | 0.860 | **0.829** | 0.860 |
+| seara-goem | 0.816 | 0.762 | 0.817 |
+| XLM-RoBERTa | 0.804 | 0.742 | 0.805 |
+
+### Ансамбль (voting)
+
+| Метод | Accuracy | F1-macro | F1-weighted |
+|---|---|---|---|
+| Weighted Averaging | 0.848 | 0.817 | 0.848 |
+| Soft Voting | 0.847 | 0.815 | 0.847 |
+| Hard Voting | 0.838 | 0.795 | 0.840 |
+
+### Стекинг
+
+| Метод | Accuracy | F1-macro | F1-weighted |
+|---|---|---|---|
+| Stacking LogReg | 0.854 | **0.820** | 0.854 |
+| Stacking SVM | 0.850 | 0.819 | 0.849 |
+| Stacking GradBoost | 0.848 | 0.809 | 0.849 |
+| Stacking XGBoost | 0.850 | 0.806 | 0.850 |
+
+### Дистилляция
+
+| Модель | Accuracy | F1-macro | F1-weighted |
+|---|---|---|---|
+| **Distilled (ruBert-large)** | **0.863** | **0.842** | **0.868** |
+
+**Итог:** дистиллированный студент `ruBert-large` (F1-macro **0.842**) превосходит и лучший ансамбль-стекинг (0.820), и сильнейшую одиночную модель ruRoBERTa-large (0.829) — при одной модели в инференсе вместо трёх.
 
 ---
 
@@ -261,8 +314,8 @@ stacking_ensemble(val_probs, val_labels, test_probs, meta_learner='xgboost')
 
 ```
 1. 01_data_preparation.ipynb  — сборка, очистка, дедупликация, аугментация (~20-40 мин)
-2. 02_training.ipynb          — обучение 7 моделей (~3-6 ч на T4 x2)
-3. 03_ensemble.ipynb          — ансамбль и финальная оценка
+2. 02_training.ipynb          — обучение 3 моделей-учителей (~3-6 ч на T4 x2)
+3. 03_ensemble.ipynb          — ансамбль, дистилляция, финальная оценка
 4. 04_applications.ipynb      — DH-инструменты
 ```
 
@@ -287,10 +340,10 @@ data/
 ```bash
 pip install -r requirements.txt
 
-# Инференс через ансамбль двух моделей (soft voting)
+# Инференс через ансамбль учителей (soft voting)
 python -c "
 from src.inference import EmotionClassifier
-clf = EmotionClassifier(['results/models/rubert', 'results/models/xlmroberta'])
+clf = EmotionClassifier(['results/models/ruroberta_large', 'results/models/xlmroberta', 'results/models/seara_goem'])
 print(clf.predict('Мне очень страшно идти туда одному'))
 "
 
@@ -301,9 +354,6 @@ clf = EmotionClassifier.from_config('results/ensemble')
 print(clf.predict_label(['Мне очень страшно идти туда одному']))
 # ['fear']
 "
-
-# Gradio-демо
-python app/app.py --model_dirs results/models/rubert results/models/xlmroberta
 ```
 
 ---
@@ -320,15 +370,15 @@ sentiment-analysis/
 │   ├── augmentation.py     — TextAugmenter (rut5 + MarianMT), _is_valid_ru фильтр,
 │   │                         augment_rare_classes (раздельные методы S1/S2)
 │   ├── trainer.py          — WeightedTrainer (focal/CE+smoothing), train_two_stage
-│   ├── ensemble.py         — voting, stacking, temperature scaling,
+│   ├── ensemble.py         — voting, stacking, temperature scaling, дистилляция,
 │   │                         save_ensemble / load_ensemble_config
 │   ├── evaluation.py       — evaluate_predictions, confusion_matrix, compare_models
 │   └── inference.py        — EmotionClassifier (batch + ансамбль + from_config)
 │
 ├── notebooks/
 │   ├── 01_data_preparation.ipynb   — Блок 1: данные, дедуп, аугментация
-│   ├── 02_training.ipynb           — Блок 2: двухэтапное обучение 7 моделей
-│   ├── 03_ensemble.ipynb           — Блок 3: ансамблирование, финальная оценка
+│   ├── 02_training.ipynb           — Блок 2: двухэтапное обучение 3 учителей
+│   ├── 03_ensemble.ipynb           — Блок 3: ансамблирование, дистилляция, оценка
 │   └── 04_applications.ipynb       — Блок 4: DH-инструменты и визуализация
 │
 ├── data/
@@ -336,9 +386,6 @@ sentiment-analysis/
 │   ├── stage1_data_augmented/      — Stage-1 + аугментация
 │   ├── stage2_data/                — Stage-2 нативный RU
 │   └── stage2_data_augmented/      — Stage-2 + аугментация
-│
-├── app/
-│   └── app.py              — Gradio-демо (HuggingFace Spaces совместим)
 │
 ├── results/                — чекпоинты моделей и результаты (gitignored)
 │   ├── models/
@@ -362,9 +409,9 @@ sentiment-analysis/
 | `s1_augmentation.png` | Сравнение распределения до/после аугментации Stage-1 |
 | `s2_augmentation.png` | Сравнение распределения до/после аугментации Stage-2 |
 
-### Блок 2 — обучение (создаётся для каждой из 7 моделей)
+### Блок 2 — обучение (создаётся для каждой из 3 моделей-учителей)
 
-Путь: `models/{model_key}/` (например `models/rubert/`, `models/xlmroberta/` и т.д.)
+Путь: `models/{model_key}/` (`models/ruroberta_large/`, `models/xlmroberta/`, `models/seara_goem/`)
 
 | Файл | Что содержит |
 |---|---|
@@ -375,7 +422,6 @@ sentiment-analysis/
 | `val_preds.npy` | Argmax-предсказания на val-выборке — shape `(M,)` |
 | `val_labels.npy` | Истинные метки val-выборки — shape `(M,)` |
 | `results.json` | Accuracy, F1-macro/weighted, полный `classification_report` по классам |
-| `thresholds.npy` | Пороги per-class (только при multi-label) |
 | `config.json` + веса | Стандартный HuggingFace checkpoint для загрузки через `from_pretrained` |
 
 Общие файлы Блока 2:
@@ -384,18 +430,22 @@ sentiment-analysis/
 |---|---|
 | `label_names.json` | Список `["anger","disgust","fear","joy","sadness","surprise","neutral"]` |
 | `ensemble_config.json` | Пути к Stage-2 директориям + гиперпараметры обучения |
-| `two_stage_comparison.png` | Столбиковый график F1-macro Stage 1 vs Stage 2 по всем 7 моделям |
-| `per_class_f1_two_stage.png` | Per-class F1 после двухэтапного обучения (7 подграфиков, один на модель) |
+| `two_stage_comparison.png` | Столбиковый график F1-macro Stage 1 vs Stage 2 по всем моделям |
+| `per_class_f1_two_stage.png` | Per-class F1 после двухэтапного обучения |
 
-### Блок 3 — ансамблирование
+### Блок 3 — ансамблирование и дистилляция
 
 | Файл | Что содержит |
 |---|---|
 | `model_comparison.png` | F1-macro лучшего ансамбля и всех индивидуальных моделей (bar chart) |
-| `cm_best_ensemble.png` | Матрица ошибок (confusion matrix) лучшего ансамбля — 7×7, нормализованная |
+| `cm_best_ensemble.png` | Матрица ошибок лучшего ансамбля — 7×7, нормализованная |
 | `final_summary.json` | Все метрики: индивидуальные модели, все voting-методы, все stacking-методы; лучший метод и его F1 |
 | `ensemble/ensemble_config.json` | Конфиг финального ансамбля: метод, пути к моделям, веса, label_names, F1 |
 | `ensemble/meta_learner.pkl` | Обученная мета-модель sklearn (только для stacking-вариантов) |
+| `distill_soft_labels_train.npy` | Кеш мягких меток учителей на Stage-2 train — shape `(N_train, 7)` |
+| `distillation_training.png` | Кривые потерь (total/KL/CE) и F1-macro по эпохам |
+| `distillation_results.json` | Гиперпараметры, best_epoch, финальные метрики, история обучения |
+| `models/distilled_rubert_large/` | Готовый HuggingFace checkpoint студента |
 
 Структура `final_summary.json`:
 ```json
@@ -405,54 +455,30 @@ sentiment-analysis/
   "individual_models": { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
   "ensemble_methods":  { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
   "stacking_methods":  { "accuracy": {…}, "f1_macro": {…}, "f1_weighted": {…} },
-  "best_ensemble": "Weighted Averaging",
-  "best_f1_macro": 0.7812
+  "best_ensemble": "Stacking LogReg",
+  "best_f1_macro": 0.820
 }
 ```
 
-Структура `results.json` (для каждой модели):
-```json
-{
-  "model_name": "ruroberta_large",
-  "accuracy": 0.7934,
-  "f1_macro": 0.7801,
-  "f1_weighted": 0.7920,
-  "test_report": {
-    "anger":    { "precision": 0.81, "recall": 0.79, "f1-score": 0.80, "support": 412 },
-    "disgust":  { … },
-    "…": { … },
-    "macro avg":    { "precision": …, "recall": …, "f1-score": 0.7801, "support": 2840 },
-    "weighted avg": { … }
-  }
-}
+Загрузка дистиллированной модели:
+```python
+from src.inference import EmotionClassifier
+clf = EmotionClassifier("results/models/distilled_rubert_large")
+clf.predict_label(["Мне очень страшно идти туда одному"])
+# ['fear']
 ```
 
 ### Блок 4 — DH-инструменты
 
 | Файл | Что содержит |
 |---|---|
-| `emotion_arc.png` | Эмоциональная дуга текста: линии вероятностей + полоска доминирующей эмоции по предложениям |
-| `emotion_timeline.png` | Временной ряд долей эмоций по датам (агрегация по неделям/месяцам) |
-| `emotion_heatmap.png` | Хитмап эмоциональных профилей по группам (авторы / жанры / источники) |
-| `radar_profiles.png` | Паукообразный (radar) график профилей нескольких авторов/групп |
-| `wordclouds.png` | Облака слов, характерных для каждой из 7 эмоций |
-
-### Блок 5 — Дистилляция
-
-| Файл | Что содержит |
-|---|---|
-| `distill_soft_labels_train.npy` | Кеш мягких меток учителей на Stage-2 train — shape `(N_train, 7)`, избавляет от повторного инференса |
-| `distillation_training.png` | Кривые потерь (total/KL/CE) и F1-macro по эпохам |
-| `distillation_results.json` | Гиперпараметры, best_epoch, финальные метрики, история обучения |
-| `models/distilled_xlmr/` | Готовый HuggingFace checkpoint студента (`config.json` + веса + токенизатор) |
-
-Загрузка дистиллированной модели:
-```python
-from src.inference import EmotionClassifier
-clf = EmotionClassifier("results/models/distilled_xlmr")
-clf.predict_label(["Мне очень страшно идти туда одному"])
-# ['fear']
-```
+| `test_distribution.png` | Распределение истинных и предсказанных меток на тесте |
+| `corpus_stats.png` | Длина текстов, длина по эмоциям, точность по классам |
+| `emotion_wordclouds.png` | TF-IDF-облака слов, характерных для каждой из 7 эмоций |
+| `confidence_dist.png` | Распределение уверенности модели по классам |
+| `emotion_entropy.png` | Энтропийный анализ эмоциональной неоднозначности |
+| `dh_confusion.png` | Матрица ошибок на тестовом наборе |
+| `dh_lexprofile.png` | Лексические профили эмоций (средний TF-IDF) |
 
 ---
 
@@ -465,10 +491,11 @@ clf.predict_label(["Мне очень страшно идти туда одно�
 | Дедупликация до сплита | Без неё 43% test оказывались в train (утечка данных) |
 | `repetition_penalty=1.2` (не 3.0) | 3.0 ломало rut5 и давало нечитаемый мусор |
 | `_is_valid_ru()` фильтр | Отсеивает аугментацию с недостаточным % кириллицы |
-| Stage-2 только `backtranslation` | Паrafраз может сменить эмоциональный тон; обратный перевод стабильнее |
+| Stage-2 только `backtranslation` | Парафраз может сменить эмоциональный тон; обратный перевод стабильнее |
 | MAX_PER_CLASS=35,000 | Caps мажоритарный joy (51k) до разумного уровня, не уничтожая данные |
 | Focal Loss Stage-1 | Устойчив к шуму аугментации, фокусируется на редких классах |
 | CE + smoothing Stage-2 | Меньший LR + smoothing 0.05 — мягкая калибровка без переобучения |
+| Дистилляция в `ruBert-large` | Качество ансамбля в одной модели; gradient checkpointing под VRAM T4 |
 
 ---
 
@@ -479,7 +506,7 @@ torch>=2.0, transformers>=4.40, datasets, accelerate   — обучение
 scikit-learn, scipy                                     — ансамбль, метрики
 xgboost>=1.7                                            — XGBoost мета-ученик
 pandas, numpy, matplotlib, seaborn                      — анализ
-gradio>=4.0                                             — веб-демо
+wordcloud, pymorphy2                                    — облака слов, лемматизация (DH)
 razdel>=0.5                                             — сегментация предложений
 sentencepiece, sacremoses                               — MarianMT токенизация
 py7zr                                                   — работа с архивами
@@ -497,3 +524,4 @@ py7zr                                                   — работа с ар
 - [Aniemore — Russian Emotional AI](https://huggingface.co/Aniemore)
 - [Focal Loss (Lin et al., 2017)](https://arxiv.org/abs/1708.02002)
 - [Temperature Scaling (Guo et al., 2017)](https://arxiv.org/abs/1706.04599)
+- [Distilling the Knowledge in a Neural Network (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531)
