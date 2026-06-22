@@ -3,12 +3,25 @@ import html
 from typing import List, Optional
 
 # ── Optional heavy deps ────────────────────────────────────────────────────
-try:
-    import pymorphy2
-    _morph = pymorphy2.MorphAnalyzer()
-    _PYMORPHY_AVAILABLE = True
-except ImportError:
-    _PYMORPHY_AVAILABLE = False
+# pymorphy2 is initialised lazily: importing it succeeds even on Python 3.11+,
+# but MorphAnalyzer() crashes there (it calls inspect.getargspec, removed in
+# 3.11). We must not let that break `import src`, so we defer and catch broadly.
+_morph = None
+_PYMORPHY_AVAILABLE = None  # None = not yet probed
+
+
+def _get_morph():
+    """Lazily build a MorphAnalyzer; return None if unavailable/incompatible."""
+    global _morph, _PYMORPHY_AVAILABLE
+    if _PYMORPHY_AVAILABLE is None:
+        try:
+            import pymorphy2
+            _morph = pymorphy2.MorphAnalyzer()
+            _PYMORPHY_AVAILABLE = True
+        except Exception:  # ImportError, AttributeError (Py3.11+), etc.
+            _morph = None
+            _PYMORPHY_AVAILABLE = False
+    return _morph
 
 try:
     import nltk
@@ -121,13 +134,14 @@ def lemmatize(text: str, remove_stopwords: bool = True) -> str:
     NOTE: Do NOT use in the transformer training pipeline.
     This is kept for classical ML baselines or linguistic analysis only.
     """
-    if not _PYMORPHY_AVAILABLE:
+    morph = _get_morph()
+    if morph is None:
         return text
 
     tokens = text.split()
     result = []
     for token in tokens:
-        parsed = _morph.parse(token)
+        parsed = morph.parse(token)
         if not parsed:
             continue
         lemma = parsed[0].normal_form
