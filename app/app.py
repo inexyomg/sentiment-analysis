@@ -1,17 +1,17 @@
 """
-Локальный сайт (Gradio) для тестирования модели классификации эмоций.
+Локальный сайт (Gradio) для распознавания эмоций в русском тексте.
 
-Модель грузится один раз при старте — источником может быть локальная папка
-или ID репозитория на HuggingFace Hub.
+Простой интерфейс: поле ввода → кнопка «Анализировать» → диаграмма
+вероятностей по 7 эмоциям (таксономия Экмана).
+
+Модель грузится один раз при старте; источник — локальная папка или
+ID репозитория на HuggingFace Hub.
 
 Запуск (локальная папка):
     python app/app.py --model_dirs results/models/distilled_xlmr
 
 Запуск (модель с HuggingFace Hub):
     python app/app.py --model_dirs Kirillx/ru-emotion-distilled-xlmr
-
-Ансамбль из нескольких моделей (soft-voting):
-    python app/app.py --model_dirs results/models/rubert results/models/xlmroberta
 
 Переменные окружения:
     MODEL_DIRS  — список моделей через запятую (папки или HF Hub ID)
@@ -26,6 +26,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import gradio as gr
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -36,18 +37,9 @@ from src.inference import EmotionClassifier
 DEFAULT_MODEL = "results/models/distilled_xlmr"
 
 EKMAN_LABEL_NAMES = ["anger", "disgust", "fear", "joy", "sadness", "surprise", "neutral"]
-
-EMOTION_RU = {
-    "anger": "гнев", "disgust": "отвращение", "fear": "страх", "joy": "радость",
-    "sadness": "грусть", "surprise": "удивление", "neutral": "нейтрально",
-}
 EMOTION_COLORS = {
     "anger": "#e74c3c", "disgust": "#8e44ad", "fear": "#2c3e50", "joy": "#f39c12",
     "sadness": "#3498db", "surprise": "#1abc9c", "neutral": "#95a5a6",
-}
-EMOTION_EMOJI = {
-    "anger": "😠", "disgust": "🤢", "fear": "😨", "joy": "😊",
-    "sadness": "😢", "surprise": "😮", "neutral": "😐",
 }
 
 # Загруженный один раз классификатор и подпись об источнике модели.
@@ -59,67 +51,47 @@ def _probs_bar_chart(label_probs: dict[str, float]) -> plt.Figure:
     labels = [l for l in EKMAN_LABEL_NAMES if l in label_probs] or list(label_probs)
     values = [label_probs[l] for l in labels]
     colors = [EMOTION_COLORS.get(l, "#888888") for l in labels]
-    ticks  = [f"{EMOTION_EMOJI.get(l, '')} {EMOTION_RU.get(l, l)}" for l in labels]
 
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    bars = ax.barh(ticks, values, color=colors, edgecolor="white", height=0.6)
+    top_label = max(label_probs, key=label_probs.get)
+    top_prob = label_probs[top_label]
+
+    fig, ax = plt.subplots(figsize=(9, 3.5))
+    bars = ax.barh(labels, values, color=colors, edgecolor="white", height=0.6)
     for bar, v in zip(bars, values):
         ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
                 f"{v:.1%}", va="center", fontsize=10)
     ax.set_xlim(0, 1.15)
     ax.set_xlabel("Вероятность")
-    ax.set_title("Распределение эмоций", fontsize=13)
+    ax.set_title(f"Предсказание: {top_label.upper()} ({top_prob:.1%})", fontsize=13)
     ax.invert_yaxis()
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
     return fig
 
 
-def predict(text: str) -> tuple:
+def predict(text: str):
     text = (text or "").strip()
     if not text:
-        return "—", None, "Введите текст для анализа."
+        return None
     if _clf is None:
-        return "Ошибка", None, "Модель не загружена."
-
-    try:
-        probs_dict = _clf.predict(text, top_k=None)[0]
-        top_label = max(probs_dict, key=probs_dict.get)
-        top_prob = probs_dict[top_label]
-        emoji = EMOTION_EMOJI.get(top_label, "")
-        ru = EMOTION_RU.get(top_label, top_label)
-        headline = f"## {emoji} {ru.upper()}\n**{top_prob:.1%}** уверенность"
-        fig = _probs_bar_chart(probs_dict)
-        detail = "\n".join(
-            f"- {EMOTION_EMOJI.get(k, '')} **{EMOTION_RU.get(k, k)}**: {v:.1%}"
-            for k, v in sorted(probs_dict.items(), key=lambda x: -x[1])
-        )
-        return headline, fig, detail
-    except Exception as e:  # noqa: BLE001
-        return "Ошибка", None, f"Ошибка инференса: {e}"
+        raise gr.Error("Модель не загружена.")
+    probs_dict = _clf.predict(text, top_k=None)[0]
+    return _probs_bar_chart(probs_dict)
 
 
 def build_demo() -> gr.Blocks:
     with gr.Blocks(title="Анализ эмоций в русском тексте", theme=gr.themes.Soft()) as demo:
         gr.Markdown(
-            "# 🎭 Анализ эмоциональной тональности\n"
-            "Определение эмоций в русскоязычных текстах по таксономии Экмана (7 классов).\n\n"
-            f"**Загруженная модель:** `{_model_label}`"
+            "# 🎭 Анализ эмоций в русском тексте\n"
+            f"Модель: `{_model_label}` · 7 эмоций (таксономия Экмана)"
         )
-
-        with gr.Row():
-            with gr.Column(scale=2):
-                text_input = gr.Textbox(
-                    label="Введите текст",
-                    placeholder="Например: Мне очень страшно идти туда одному...",
-                    lines=4,
-                )
-                submit_btn = gr.Button("Анализировать", variant="primary")
-            with gr.Column(scale=1):
-                top_emotion = gr.Markdown(label="Основная эмоция")
-                detail_md = gr.Markdown(label="Детали")
-
-        chart_out = gr.Plot(label="Распределение вероятностей")
+        text_input = gr.Textbox(
+            label="Введите текст",
+            placeholder="Например: Мне очень страшно идти туда одному...",
+            lines=4,
+        )
+        submit_btn = gr.Button("Анализировать", variant="primary")
+        chart_out = gr.Plot(label="Вероятности эмоций")
 
         gr.Examples(
             examples=[
@@ -128,15 +100,12 @@ def build_demo() -> gr.Blocks:
                 ["Это просто отвратительно, как они поступили."],
                 ["Завтра будет встреча в 10 утра."],
                 ["Не могу поверить! Это совершенно неожиданно!"],
-                ["Я так устал от всего этого, ничего не радует."],
             ],
             inputs=[text_input],
         )
 
-        submit_btn.click(predict, inputs=[text_input],
-                         outputs=[top_emotion, chart_out, detail_md])
-        text_input.submit(predict, inputs=[text_input],
-                          outputs=[top_emotion, chart_out, detail_md])
+        submit_btn.click(predict, inputs=[text_input], outputs=[chart_out])
+        text_input.submit(predict, inputs=[text_input], outputs=[chart_out])
 
     return demo
 
