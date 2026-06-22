@@ -36,9 +36,21 @@ class EmotionClassifier:
         multi_label: bool = False,
         device: Optional[str] = None,
         clean: bool = True,
+        subfolder: Optional[Union[str, List[str]]] = None,
     ):
+        """
+        subfolder: when a model lives inside a subfolder of a HuggingFace repo
+            (e.g. repo "Kirillx/ru-text-emotion-classification", folder
+            "distilled_xlmr"), pass the folder here. A single string applies to
+            all model_dirs; a list gives one subfolder per model.
+        """
         if isinstance(model_dirs, str):
             model_dirs = [model_dirs]
+
+        if subfolder is None or isinstance(subfolder, str):
+            subfolders = [subfolder] * len(model_dirs)
+        else:
+            subfolders = list(subfolder)
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.multi_label = multi_label
@@ -48,11 +60,12 @@ class EmotionClassifier:
         self.meta_clf = None  # set by from_config() for stacking ensembles
 
         self.tokenizers, self.models, self.thresholds = [], [], []
-        for d in model_dirs:
-            self.tokenizers.append(AutoTokenizer.from_pretrained(d))
-            model = AutoModelForSequenceClassification.from_pretrained(d).to(self.device).eval()
+        for d, sub in zip(model_dirs, subfolders):
+            kw = {"subfolder": sub} if sub else {}
+            self.tokenizers.append(AutoTokenizer.from_pretrained(d, **kw))
+            model = AutoModelForSequenceClassification.from_pretrained(d, **kw).to(self.device).eval()
             self.models.append(model)
-            t_path = os.path.join(d, "thresholds.npy")
+            t_path = os.path.join(d, sub or "", "thresholds.npy")
             self.thresholds.append(np.load(t_path) if os.path.exists(t_path) else None)
 
         # Derive label names from the first model's config if not given

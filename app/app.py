@@ -110,11 +110,12 @@ def build_demo() -> gr.Blocks:
     return demo
 
 
-def _load_classifier(model_dirs: list[str]) -> None:
+def _load_classifier(model_dirs: list[str], subfolder: str | None = None) -> None:
     global _clf, _model_label
-    print(f"Загрузка модели: {model_dirs} ...")
-    _clf = EmotionClassifier(model_dirs, clean=True)
-    _model_label = ", ".join(model_dirs)
+    print(f"Загрузка модели: {model_dirs}"
+          + (f" (subfolder={subfolder})" if subfolder else "") + " ...")
+    _clf = EmotionClassifier(model_dirs, clean=True, subfolder=subfolder)
+    _model_label = ", ".join(model_dirs) + (f"/{subfolder}" if subfolder else "")
     print(f"Готово. Устройство: {_clf.device}")
 
 
@@ -122,6 +123,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_dirs", nargs="+", default=[],
                         help="Папки с моделями или HF Hub ID")
+    parser.add_argument("--subfolder", default=None,
+                        help="Подпапка внутри HF-репозитория (напр. distilled_xlmr)")
     parser.add_argument("--share", action="store_true", help="Публичная ссылка Gradio")
     parser.add_argument("--port", type=int, default=7860)
     args = parser.parse_args()
@@ -130,7 +133,8 @@ if __name__ == "__main__":
     model_dirs = (args.model_dirs
                   or [d.strip() for d in env_dirs.split(",") if d.strip()]
                   or [DEFAULT_MODEL])
+    subfolder = args.subfolder or os.environ.get("SUBFOLDER") or None
 
-    _load_classifier(model_dirs)
+    _load_classifier(model_dirs, subfolder=subfolder)
     demo = build_demo()
     demo.launch(server_port=args.port, share=args.share)
